@@ -1,1301 +1,995 @@
-# VC-Sourcing
-
-
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-
-// ─── MOCK DATA ────────────────────────────────────────────────────────────────
-const MOCK_COMPANIES = [
-  { id:"1",  name:"Pika Labs",     domain:"pika.art",        sector:"Generative AI", stage:"Series A", hc:38,  arr:4,   location:"Palo Alto, CA",    founded:2023, tags:["generative-video","creative-AI","consumer"],          score:null },
-  { id:"2",  name:"Cognition AI",  domain:"cognition.ai",    sector:"AI Agents",     stage:"Series B", hc:55,  arr:12,  location:"San Francisco, CA", founded:2023, tags:["AI-agents","coding","developer-tools"],              score:null },
-  { id:"3",  name:"Perplexity AI", domain:"perplexity.ai",   sector:"Search / AI",   stage:"Series C", hc:120, arr:30,  location:"San Francisco, CA", founded:2022, tags:["search","AI","consumer"],                            score:null },
-  { id:"4",  name:"ElevenLabs",    domain:"elevenlabs.io",   sector:"Generative AI", stage:"Series B", hc:90,  arr:22,  location:"New York, NY",      founded:2022, tags:["voice-AI","audio","API"],                            score:null },
-  { id:"5",  name:"Mistral AI",    domain:"mistral.ai",      sector:"Foundation ML", stage:"Series B", hc:200, arr:40,  location:"Paris, France",     founded:2023, tags:["LLM","open-source","foundation-model"],              score:null },
-  { id:"6",  name:"Supabase",      domain:"supabase.com",    sector:"Dev Infra",     stage:"Series C", hc:110, arr:35,  location:"San Francisco, CA", founded:2020, tags:["database","BaaS","open-source"],                    score:null },
-  { id:"7",  name:"Linear",        domain:"linear.app",      sector:"Productivity",  stage:"Series B", hc:60,  arr:18,  location:"San Francisco, CA", founded:2019, tags:["project-management","developer-tools","B2B"],        score:null },
-  { id:"8",  name:"Retool",        domain:"retool.com",      sector:"Dev Infra",     stage:"Series D", hc:400, arr:80,  location:"San Francisco, CA", founded:2017, tags:["internal-tools","low-code","enterprise"],            score:null },
-  { id:"9",  name:"Anyscale",      domain:"anyscale.com",    sector:"ML Infra",      stage:"Series C", hc:180, arr:28,  location:"Berkeley, CA",      founded:2019, tags:["ML-infrastructure","distributed","open-source"],     score:null },
-  { id:"10", name:"Warp",          domain:"warp.dev",        sector:"Dev Infra",     stage:"Series B", hc:75,  arr:10,  location:"New York, NY",      founded:2020, tags:["terminal","developer-tools","AI"],                  score:null },
-  { id:"11", name:"Runway",        domain:"runwayml.com",    sector:"Generative AI", stage:"Series C", hc:95,  arr:25,  location:"New York, NY",      founded:2018, tags:["generative-video","creative-AI","enterprise"],       score:null },
-  { id:"12", name:"Modal",         domain:"modal.com",       sector:"ML Infra",      stage:"Series A", hc:40,  arr:8,   location:"New York, NY",      founded:2021, tags:["cloud","serverless","ML-infrastructure"],            score:null },
-  { id:"13", name:"Cursor",        domain:"cursor.com",      sector:"AI Agents",     stage:"Series B", hc:50,  arr:20,  location:"San Francisco, CA", founded:2022, tags:["AI-coding","developer-tools","IDE"],                 score:null },
-  { id:"14", name:"Together AI",   domain:"together.ai",     sector:"ML Infra",      stage:"Series B", hc:85,  arr:15,  location:"San Francisco, CA", founded:2022, tags:["inference","open-source","foundation-model"],        score:null },
-  { id:"15", name:"Replit",        domain:"replit.com",      sector:"Dev Infra",     stage:"Series C", hc:130, arr:45,  location:"San Francisco, CA", founded:2016, tags:["cloud-IDE","AI","developer-tools"],                  score:null },
-];
-
-const DEFAULT_THESIS = {
-  fundName: "Apex Ventures",
-  focus: "Early-stage B2B software and AI infrastructure",
-  sectors: ["AI Agents", "ML Infra", "Dev Infra", "Generative AI"],
-  stages: ["Series A", "Series B"],
-  keywords: ["open-source", "developer-tools", "API", "infrastructure", "foundation-model"],
-  antiPatterns: ["consumer", "gaming", "hardware"],
-  minARR: 5,
-  maxHC: 250,
-  geoFocus: "US & Europe",
-};
-
-const SECTORS = ["All","AI Agents","Generative AI","Foundation ML","ML Infra","Dev Infra","Search / AI","Productivity"];
-const STAGES  = ["All","Series A","Series B","Series C","Series D"];
-const PAGE_SZ = 8;
-
-// ─── ANTHROPIC API ────────────────────────────────────────────────────────────
-async function callClaude(prompt, systemPrompt = "") {
-  const messages = [{ role:"user", content: prompt }];
-  const body = { model:"claude-sonnet-4-20250514", max_tokens:1200, messages };
-  if (systemPrompt) body.system = systemPrompt;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST", headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  const text = data.content?.find(b => b.type==="text")?.text || "{}";
-  const clean = text.replace(/```json\n?|```/g,"").trim();
-  try { return JSON.parse(clean); } catch { return null; }
-}
-
-async function enrichCompany(company, thesis) {
-  const prompt = `You are a VC analyst at ${thesis.fundName}. Our thesis: "${thesis.focus}". Target sectors: ${thesis.sectors.join(", ")}. Key signals we look for: ${thesis.keywords.join(", ")}. Anti-patterns to avoid: ${thesis.antiPatterns.join(", ")}.
-
-Analyze the company "${company.name}" (domain: ${company.domain}, sector: ${company.sector}, stage: ${company.stage}, tags: ${company.tags.join(", ")}).
-
-Return ONLY a JSON object (no markdown):
-{
-  "summary": "2-sentence company description",
-  "whatTheyDo": ["bullet 1", "bullet 2", "bullet 3", "bullet 4"],
-  "keywords": ["kw1","kw2","kw3","kw4","kw5","kw6"],
-  "thesisScore": <integer 0-100>,
-  "thesisVerdict": "Strong Match" | "Partial Match" | "Weak Match" | "Not a Fit",
-  "matchReasons": ["reason company matches thesis 1", "reason 2", "reason 3"],
-  "watchouts": ["concern or anti-pattern 1", "concern 2"],
-  "signals": [
-    {"label": "signal name", "type": "positive"|"neutral"|"negative", "detail": "1 sentence"},
-    {"label": "signal name", "type": "positive"|"neutral"|"negative", "detail": "1 sentence"},
-    {"label": "signal name", "type": "positive"|"neutral"|"negative", "detail": "1 sentence"}
-  ],
-  "sources": [
-    {"url": "https://${company.domain}", "label": "Homepage"},
-    {"url": "https://${company.domain}/about", "label": "About"},
-    {"url": "https://${company.domain}/careers", "label": "Careers"}
-  ]
-}`;
-  return callClaude(prompt);
-}
-
-async function scoutCompanies(thesis, existing) {
-  const prompt = `You are a VC scout for ${thesis.fundName}. Our investment thesis: "${thesis.focus}". Target sectors: ${thesis.sectors.join(", ")}. Stages: ${thesis.stages.join(", ")}. Keywords: ${thesis.keywords.join(", ")}. Anti-patterns to avoid: ${thesis.antiPatterns.join(", ")}.
-
-Suggest 5 real, currently active startups that strongly match this thesis. Do NOT suggest: ${existing.join(", ")}.
-
-Return ONLY a JSON array (no markdown):
-[
-  {
-    "name": "Company Name",
-    "domain": "company.com",
-    "sector": "<one of: ${thesis.sectors.join("|")}>",
-    "stage": "<one of: ${thesis.stages.join("|")}>",
-    "location": "City, Country",
-    "founded": <year>,
-    "hc": <estimated headcount integer>,
-    "arr": <estimated ARR in $M integer>,
-    "tags": ["tag1","tag2","tag3"],
-    "whyMatch": "1-2 sentence explanation of why this strongly fits the thesis",
-    "signal": "One standout recent signal or traction point"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VentureScope — Indian Startup Intelligence</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0c0f;
+    --surface: #111318;
+    --border: #1e2028;
+    --border-hover: #2e3040;
+    --accent: #f97316;
+    --accent2: #fb923c;
+    --text: #e8eaf0;
+    --text-muted: #6b7280;
+    --text-sub: #9ca3af;
+    --green: #22c55e;
+    --blue: #3b82f6;
+    --purple: #a855f7;
+    --red: #ef4444;
+    --sidebar-w: 220px;
   }
-]`;
-  return callClaude(prompt);
-}
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; display: flex; height: 100vh; overflow: hidden; }
 
-// ─── STYLES ───────────────────────────────────────────────────────────────────
-const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+  /* SIDEBAR */
+  #sidebar {
+    width: var(--sidebar-w); min-width: var(--sidebar-w); background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 0; z-index: 10;
+  }
+  .logo { padding: 20px 20px 16px; border-bottom: 1px solid var(--border); }
+  .logo-text { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 18px; color: var(--accent); letter-spacing: -0.5px; }
+  .logo-sub { font-size: 10px; color: var(--text-muted); letter-spacing: 1.5px; text-transform: uppercase; margin-top: 2px; }
+  nav { padding: 12px 8px; flex: 1; }
+  .nav-section { font-size: 10px; color: var(--text-muted); letter-spacing: 1.5px; text-transform: uppercase; padding: 8px 12px 4px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; cursor: pointer;
+    color: var(--text-sub); font-size: 13.5px; font-weight: 400; margin-bottom: 2px; transition: all .15s;
+    border: 1px solid transparent;
+  }
+  .nav-item:hover { background: rgba(249,115,22,.08); color: var(--text); border-color: rgba(249,115,22,.15); }
+  .nav-item.active { background: rgba(249,115,22,.12); color: var(--accent); border-color: rgba(249,115,22,.25); font-weight: 500; }
+  .nav-icon { font-size: 15px; width: 18px; text-align: center; }
+  .sidebar-footer { padding: 16px; border-top: 1px solid var(--border); }
+  .thesis-badge { background: rgba(168,85,247,.15); border: 1px solid rgba(168,85,247,.3); border-radius: 6px; padding: 8px 10px; font-size: 11px; color: #c084fc; }
+  .thesis-label { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 4px; }
 
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  /* MAIN */
+  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
-:root{
-  --cream:#faf8f4;
-  --cream2:#f4f1eb;
-  --cream3:#ede9e0;
-  --ink:#1a1612;
-  --ink2:#3d3530;
-  --ink3:#6b5f56;
-  --muted:#9b8f86;
-  --border:#ddd8ce;
-  --border2:#c8c0b4;
-  --amber:#c8660a;
-  --amber-light:#fdf0e4;
-  --amber-mid:#f0d4b0;
-  --green:#1a6e3c;
-  --green-light:#e8f5ee;
-  --red:#c0392b;
-  --red-light:#fdecea;
-  --blue:#1a4a8a;
-  --blue-light:#e8f0fc;
-  --gold:#b8860b;
-  --font-serif:'Playfair Display',Georgia,serif;
-  --font-mono:'DM Mono',monospace;
-  --font-sans:'DM Sans',sans-serif;
-  --shadow:0 1px 3px rgba(26,22,18,0.08),0 1px 2px rgba(26,22,18,0.04);
-  --shadow-md:0 4px 12px rgba(26,22,18,0.1),0 2px 4px rgba(26,22,18,0.06);
-  --shadow-lg:0 12px 32px rgba(26,22,18,0.12),0 4px 8px rgba(26,22,18,0.06);
-}
+  /* TOPBAR */
+  #topbar {
+    background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  #global-search {
+    flex: 1; max-width: 420px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 14px; color: var(--text); font-size: 13.5px; font-family: 'DM Sans', sans-serif; outline: none; transition: border .15s;
+  }
+  #global-search:focus { border-color: var(--accent); }
+  #global-search::placeholder { color: var(--text-muted); }
+  .topbar-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .badge-count { background: var(--accent); color: white; border-radius: 99px; font-size: 10px; font-weight: 700; padding: 2px 7px; }
+  .page-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 16px; }
 
-body{background:var(--cream);color:var(--ink);font-family:var(--font-sans);height:100vh;overflow:hidden}
+  /* CONTENT */
+  #content { flex: 1; overflow-y: auto; padding: 24px; }
+  #content::-webkit-scrollbar { width: 4px; }
+  #content::-webkit-scrollbar-thumb { background: var(--border-hover); border-radius: 4px; }
 
-.app{display:flex;height:100vh;overflow:hidden}
+  /* PAGE SECTIONS */
+  .page { display: none; }
+  .page.active { display: block; }
 
-/* ── SIDEBAR ── */
-.sidebar{
-  width:236px;min-width:236px;background:var(--ink);
-  display:flex;flex-direction:column;overflow:hidden;
-}
-.sb-logo{
-  padding:20px 18px 18px;border-bottom:1px solid rgba(255,255,255,0.08);
-  display:flex;align-items:center;gap:10px;
-}
-.sb-logo-mark{
-  width:32px;height:32px;background:var(--amber);border-radius:6px;
-  display:flex;align-items:center;justify-content:center;
-  font-family:var(--font-serif);font-size:17px;font-weight:700;color:#fff;
-}
-.sb-logo-name{font-family:var(--font-serif);font-size:16px;color:#fff;font-weight:600;letter-spacing:-0.2px}
-.sb-logo-badge{
-  margin-left:auto;font-size:9px;font-family:var(--font-mono);
-  background:rgba(200,102,10,0.25);color:var(--amber);
-  padding:2px 6px;border-radius:3px;letter-spacing:0.5px;
-}
+  /* FILTERS */
+  .filters-row { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+  select, .filter-btn {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-sub); border-radius: 7px;
+    padding: 7px 12px; font-size: 12.5px; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: border .15s;
+  }
+  select:focus, .filter-btn:hover { border-color: var(--border-hover); outline: none; color: var(--text); }
+  .filter-btn.active-filter { border-color: var(--accent); color: var(--accent); background: rgba(249,115,22,.08); }
+  .search-input {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 7px;
+    padding: 7px 14px; font-size: 13px; font-family: 'DM Sans', sans-serif; outline: none; transition: border .15s; min-width: 220px;
+  }
+  .search-input:focus { border-color: var(--accent); }
+  .result-count { color: var(--text-muted); font-size: 12px; margin-left: auto; }
 
-.sb-section{padding:14px 10px 6px}
-.sb-section-label{font-size:9px;font-family:var(--font-mono);color:rgba(255,255,255,0.28);text-transform:uppercase;letter-spacing:1.8px;padding:0 8px 8px}
+  /* TABLE */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    background: rgba(255,255,255,.03); padding: 11px 16px; text-align: left; font-size: 11px; font-weight: 600;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border);
+    cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  thead th:hover { color: var(--text); }
+  thead th .sort-arrow { margin-left: 4px; opacity: .4; }
+  thead th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
+  tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; cursor: pointer; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: rgba(255,255,255,.03); }
+  td { padding: 12px 16px; vertical-align: middle; }
+  .company-name { font-weight: 500; color: var(--text); font-size: 13.5px; }
+  .company-domain { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; margin: 1px; }
+  .tag-sector { background: rgba(59,130,246,.15); color: #60a5fa; border: 1px solid rgba(59,130,246,.2); }
+  .tag-stage { background: rgba(34,197,94,.1); color: #4ade80; border: 1px solid rgba(34,197,94,.2); }
+  .tag-city { background: rgba(168,85,247,.1); color: #c084fc; border: 1px solid rgba(168,85,247,.2); }
+  .score-bar { display: flex; align-items: center; gap: 8px; }
+  .score-num { font-weight: 600; font-size: 13px; min-width: 26px; }
+  .bar-bg { flex: 1; height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; min-width: 60px; }
+  .bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), #fbbf24); }
 
-.nav-item{
-  display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:6px;
-  cursor:pointer;font-size:12.5px;color:rgba(255,255,255,0.5);
-  transition:all 0.15s;user-select:none;font-family:var(--font-sans);font-weight:400;
-}
-.nav-item:hover{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.8)}
-.nav-item.active{background:rgba(200,102,10,0.18);color:#f5c48a;border-left:2px solid var(--amber);padding-left:8px}
-.nav-icon{font-size:14px;width:18px;text-align:center;opacity:0.7}
-.nav-item.active .nav-icon{opacity:1}
-.nav-badge{
-  margin-left:auto;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.35);
-  font-size:9.5px;padding:1px 6px;border-radius:10px;font-family:var(--font-mono);
-}
-.nav-item.active .nav-badge{background:rgba(200,102,10,0.3);color:#f5c48a}
+  /* PAGINATION */
+  .pagination { display: flex; gap: 6px; align-items: center; justify-content: flex-end; margin-top: 16px; }
+  .pg-btn {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-sub); border-radius: 6px;
+    padding: 5px 11px; cursor: pointer; font-size: 12px; transition: all .15s; font-family: 'DM Sans', sans-serif;
+  }
+  .pg-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .pg-btn.current { background: var(--accent); color: white; border-color: var(--accent); }
+  .pg-btn:disabled { opacity: .3; cursor: default; }
 
-.sb-thesis-card{
-  margin:10px;border-radius:8px;background:rgba(255,255,255,0.05);
-  border:1px solid rgba(255,255,255,0.08);padding:12px;
-}
-.sb-thesis-label{font-size:9px;font-family:var(--font-mono);color:rgba(255,255,255,0.28);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px}
-.sb-thesis-name{font-size:12px;color:#fff;font-weight:500;margin-bottom:4px}
-.sb-thesis-desc{font-size:10.5px;color:rgba(255,255,255,0.4);line-height:1.5}
+  /* PROFILE PAGE */
+  .profile-header { display: flex; gap: 20px; align-items: flex-start; margin-bottom: 24px; }
+  .profile-logo-box {
+    width: 64px; height: 64px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center; font-size: 28px; flex-shrink: 0;
+  }
+  .profile-meta h1 { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 22px; margin-bottom: 6px; }
+  .profile-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .profile-desc { color: var(--text-sub); font-size: 13px; line-height: 1.6; max-width: 600px; }
+  .profile-actions { margin-left: auto; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+  .btn {
+    padding: 8px 16px; border-radius: 7px; font-size: 13px; font-weight: 500; cursor: pointer;
+    font-family: 'DM Sans', sans-serif; border: none; transition: all .15s;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: var(--accent2); }
+  .btn-outline { background: transparent; color: var(--text-sub); border: 1px solid var(--border); }
+  .btn-outline:hover { border-color: var(--border-hover); color: var(--text); }
+  .btn-sm { padding: 5px 12px; font-size: 12px; }
+  .btn-success { background: rgba(34,197,94,.15); color: var(--green); border: 1px solid rgba(34,197,94,.3); }
 
-.sb-bottom{margin-top:auto;border-top:1px solid rgba(255,255,255,0.07);padding:12px}
-.sb-stat{display:flex;justify-content:space-between;font-size:10.5px;color:rgba(255,255,255,0.3);padding:3px 0}
-.sb-stat span{color:rgba(255,255,255,0.65);font-family:var(--font-mono)}
+  .profile-grid { display: grid; grid-template-columns: 1fr 340px; gap: 20px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+  .card-title { font-family: 'Syne', sans-serif; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 14px; }
+  .stat-row { display: flex; gap: 20px; margin-bottom: 20px; }
+  .stat-box { flex: 1; }
+  .stat-label { font-size: 11px; color: var(--text-muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: .8px; }
+  .stat-val { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 18px; }
+  .kv { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .kv:last-child { border-bottom: none; }
+  .kv-key { color: var(--text-muted); font-size: 12.5px; }
+  .kv-val { color: var(--text); font-size: 12.5px; font-weight: 500; }
 
-/* ── MAIN ── */
-.main{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--cream)}
+  /* SIGNALS */
+  .signal-item { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); align-items: flex-start; }
+  .signal-item:last-child { border-bottom: none; }
+  .signal-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+  .signal-content { flex: 1; }
+  .signal-text { font-size: 13px; color: var(--text); line-height: 1.5; }
+  .signal-date { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 
-/* ── TOPBAR ── */
-.topbar{
-  height:54px;background:var(--cream);border-bottom:1px solid var(--border);
-  display:flex;align-items:center;gap:12px;padding:0 24px;flex-shrink:0;
-}
-.topbar-breadcrumb{font-size:11px;font-family:var(--font-mono);color:var(--muted);display:flex;align-items:center;gap:6px}
-.breadcrumb-sep{color:var(--border2)}
-.breadcrumb-active{color:var(--ink2);font-weight:500}
+  /* NOTES */
+  #notes-area {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; color: var(--text);
+    padding: 10px 12px; font-family: 'DM Sans', sans-serif; font-size: 13px; resize: vertical; min-height: 80px; outline: none;
+  }
+  #notes-area:focus { border-color: var(--accent); }
 
-.search-wrap{position:relative;max-width:360px;flex:1}
-.search-input{
-  width:100%;background:var(--cream2);border:1px solid var(--border);border-radius:7px;
-  padding:7px 12px 7px 34px;color:var(--ink);font-family:var(--font-sans);font-size:13px;
-  outline:none;transition:all 0.2s;
-}
-.search-input:focus{border-color:var(--amber);background:#fff;box-shadow:0 0 0 3px rgba(200,102,10,0.1)}
-.search-input::placeholder{color:var(--muted)}
-.search-icon{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px;pointer-events:none}
+  /* ENRICHMENT */
+  .enrich-box { margin-top: 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .enrich-loading { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 13px; }
+  .spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .enrich-section { margin-bottom: 14px; }
+  .enrich-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600; }
+  .enrich-summary { font-size: 13px; color: var(--text); line-height: 1.6; }
+  .bullet-list { list-style: none; }
+  .bullet-list li { font-size: 13px; color: var(--text-sub); padding: 3px 0; display: flex; gap: 7px; }
+  .bullet-list li::before { content: '→'; color: var(--accent); flex-shrink: 0; }
+  .keyword-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .kw-chip { background: rgba(249,115,22,.1); border: 1px solid rgba(249,115,22,.2); color: var(--accent); border-radius: 4px; padding: 2px 8px; font-size: 11.5px; }
+  .source-link { display: block; font-size: 11.5px; color: #60a5fa; text-decoration: none; padding: 2px 0; }
+  .source-link:hover { text-decoration: underline; }
+  .signal-tag { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 4px; font-size: 11.5px; margin: 2px; }
+  .signal-tag.positive { background: rgba(34,197,94,.1); color: var(--green); border: 1px solid rgba(34,197,94,.2); }
+  .signal-tag.neutral { background: rgba(59,130,246,.1); color: #60a5fa; border: 1px solid rgba(59,130,246,.2); }
 
-.topbar-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  /* LISTS PAGE */
+  .lists-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .list-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 12px; }
+  .list-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .list-name { font-family: 'Syne', sans-serif; font-weight: 600; font-size: 15px; }
+  .list-meta { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+  .list-companies { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .list-co-tag { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 3px 9px; font-size: 12px; color: var(--text-sub); }
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--text-muted); }
+  .empty-icon { font-size: 36px; margin-bottom: 12px; }
+  .empty-title { font-size: 15px; font-weight: 600; color: var(--text-sub); margin-bottom: 6px; }
 
-/* ── BUTTONS ── */
-.btn{
-  padding:7px 14px;border-radius:6px;font-family:var(--font-sans);font-size:12px;
-  cursor:pointer;transition:all 0.15s;border:1px solid transparent;font-weight:500;
-  display:inline-flex;align-items:center;gap:6px;
-}
-.btn-primary{background:var(--amber);color:#fff;border-color:var(--amber)}
-.btn-primary:hover{background:#b85c08}
-.btn-secondary{background:#fff;color:var(--ink2);border-color:var(--border)}
-.btn-secondary:hover{border-color:var(--border2);background:var(--cream2)}
-.btn-ghost{background:transparent;color:var(--muted);border-color:transparent}
-.btn-ghost:hover{background:var(--cream2);color:var(--ink2)}
-.btn-sm{padding:5px 10px;font-size:11px}
-.btn-xs{padding:3px 8px;font-size:10.5px}
-.btn-danger{background:transparent;color:var(--red);border-color:rgba(192,57,43,0.25)}
-.btn-danger:hover{background:var(--red-light)}
-.btn:disabled{opacity:0.5;cursor:not-allowed}
+  /* SAVED SEARCHES */
+  .saved-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 14px; }
+  .saved-query { font-weight: 500; font-size: 13.5px; }
+  .saved-filters { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; }
+  .saved-date { font-size: 11px; color: var(--text-muted); margin-left: auto; white-space: nowrap; }
 
-/* ── PAGE ── */
-.page{flex:1;overflow:auto;padding:24px}
-.page-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px}
-.page-title{font-family:var(--font-serif);font-size:22px;font-weight:600;color:var(--ink);letter-spacing:-0.3px}
-.page-subtitle{font-size:12px;color:var(--muted);margin-top:3px}
+  /* MODAL */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none; align-items: center; justify-content: center; z-index: 100; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; min-width: 360px; max-width: 480px; width: 100%; }
+  .modal-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 17px; margin-bottom: 16px; }
+  .modal-input { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 7px; padding: 9px 13px; font-size: 13px; font-family: 'DM Sans', sans-serif; outline: none; margin-bottom: 12px; }
+  .modal-input:focus { border-color: var(--accent); }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
-/* ── FILTERS ── */
-.filters-row{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-.filter-group{display:flex;align-items:center;gap:6px}
-.filter-label{font-size:11px;color:var(--muted);font-family:var(--font-mono)}
-.chip{
-  padding:4px 10px;border-radius:20px;font-size:11.5px;cursor:pointer;
-  border:1px solid var(--border);color:var(--ink3);background:#fff;
-  transition:all 0.15s;font-family:var(--font-sans);font-weight:400;
-}
-.chip:hover{border-color:var(--border2);color:var(--ink2)}
-.chip.on{border-color:var(--amber);color:var(--amber);background:var(--amber-light)}
-.filter-divider{width:1px;height:18px;background:var(--border);margin:0 4px}
-.result-count{font-size:11.5px;color:var(--muted);margin-left:auto;font-family:var(--font-mono)}
+  /* TOAST */
+  #toast {
+    position: fixed; bottom: 24px; right: 24px; background: #1a1d24; border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 8px; padding: 12px 18px; font-size: 13px;
+    color: var(--text); z-index: 200; transform: translateY(80px); opacity: 0; transition: all .25s;
+  }
+  #toast.show { transform: translateY(0); opacity: 1; }
 
-/* ── TABLE ── */
-.table-card{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff;box-shadow:var(--shadow)}
-table{width:100%;border-collapse:collapse}
-thead tr{background:var(--cream2);border-bottom:1px solid var(--border)}
-th{
-  text-align:left;padding:10px 16px;font-size:10.5px;font-weight:500;
-  color:var(--muted);text-transform:uppercase;letter-spacing:1.2px;
-  font-family:var(--font-mono);cursor:pointer;user-select:none;white-space:nowrap;
-}
-th:hover{color:var(--ink2)}
-th.sorted{color:var(--amber)}
-tbody tr{border-bottom:1px solid var(--border);transition:background 0.1s;cursor:pointer}
-tbody tr:last-child{border-bottom:none}
-tbody tr:hover{background:var(--cream)}
-td{padding:11px 16px;font-size:13px;color:var(--ink2);white-space:nowrap}
-.td-company{display:flex;align-items:center;gap:10px}
-.co-avatar{
-  width:28px;height:28px;border-radius:6px;background:var(--cream3);
-  border:1px solid var(--border);display:flex;align-items:center;
-  justify-content:center;font-size:14px;flex-shrink:0;
-}
-.co-name{font-weight:500;color:var(--ink)}
-.co-domain{font-size:11px;color:var(--muted);font-family:var(--font-mono)}
+  /* BACK BTN */
+  .back-btn { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 13px; cursor: pointer; margin-bottom: 20px; transition: color .15s; }
+  .back-btn:hover { color: var(--accent); }
 
-.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
-.badge-sector{background:var(--blue-light);color:var(--blue);border:1px solid rgba(26,74,138,0.15)}
-.badge-stage{background:var(--amber-light);color:var(--amber);border:1px solid rgba(200,102,10,0.2)}
+  /* SCROLLBAR */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+</style>
+</head>
+<body>
 
-/* SCORE CELL */
-.score-cell{display:flex;align-items:center;gap:8px}
-.score-ring{position:relative;width:32px;height:32px;flex-shrink:0}
-.score-ring svg{transform:rotate(-90deg)}
-.score-ring-num{
-  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-  font-size:9px;font-family:var(--font-mono);font-weight:500;color:var(--ink);
-}
-.score-verdict{font-size:11px;font-weight:500}
-.score-null{font-size:11px;color:var(--muted);font-family:var(--font-mono)}
-.verdict-strong{color:var(--green)}
-.verdict-partial{color:var(--gold)}
-.verdict-weak{color:var(--muted)}
-.verdict-none{color:var(--red)}
-
-/* ── PAGINATION ── */
-.pagination{display:flex;align-items:center;justify-content:space-between;margin-top:16px}
-.pag-info{font-size:11.5px;color:var(--muted);font-family:var(--font-mono)}
-.pag-buttons{display:flex;gap:4px}
-.pag-btn{
-  padding:5px 11px;border-radius:5px;font-size:11.5px;cursor:pointer;font-family:var(--font-mono);
-  border:1px solid var(--border);color:var(--muted);background:#fff;transition:all 0.15s;
-}
-.pag-btn:hover:not(:disabled){border-color:var(--border2);color:var(--ink2)}
-.pag-btn:disabled{opacity:0.35;cursor:not-allowed}
-.pag-btn.on{border-color:var(--amber);color:var(--amber);background:var(--amber-light)}
-
-/* ── PROFILE ── */
-.profile-hero{
-  background:#fff;border:1px solid var(--border);border-radius:12px;
-  padding:24px 28px;margin-bottom:18px;display:flex;align-items:flex-start;gap:18px;
-  box-shadow:var(--shadow);
-}
-.profile-avatar{
-  width:60px;height:60px;border-radius:12px;background:var(--cream2);
-  border:1px solid var(--border);display:flex;align-items:center;
-  justify-content:center;font-size:26px;flex-shrink:0;
-}
-.profile-info{flex:1}
-.profile-name{font-family:var(--font-serif);font-size:26px;font-weight:600;color:var(--ink);letter-spacing:-0.4px;margin-bottom:2px}
-.profile-meta{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:12px;color:var(--muted)}
-.profile-meta a{color:var(--blue);text-decoration:none;font-family:var(--font-mono)}
-.profile-tags{display:flex;flex-wrap:wrap;gap:5px}
-.tag{background:var(--cream2);border:1px solid var(--border);color:var(--ink3);padding:2px 9px;border-radius:12px;font-size:11px}
-
-.profile-score-block{
-  background:var(--cream2);border:1px solid var(--border);border-radius:10px;
-  padding:16px 18px;text-align:center;flex-shrink:0;min-width:140px;
-}
-.psb-label{font-size:9.5px;font-family:var(--font-mono);color:var(--muted);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px}
-.psb-score{font-family:var(--font-serif);font-size:36px;font-weight:700;color:var(--ink);line-height:1}
-.psb-verdict{font-size:12px;font-weight:600;margin-top:4px}
-
-.two-col{display:grid;grid-template-columns:1fr 340px;gap:18px}
-.stack>*+*{margin-top:14px}
-
-.card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:20px 22px;box-shadow:var(--shadow)}
-.card-title{
-  font-size:10px;font-family:var(--font-mono);font-weight:500;color:var(--muted);
-  text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px;
-  display:flex;align-items:center;gap:8px;
-}
-.card-title-action{margin-left:auto}
-
-.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px}
-.stat-item{background:var(--cream2);border:1px solid var(--border);border-radius:7px;padding:11px 13px}
-.stat-label{font-size:9.5px;font-family:var(--font-mono);color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
-.stat-val{font-size:17px;font-weight:600;color:var(--ink);font-family:var(--font-serif)}
-
-/* THESIS MATCH CARD */
-.match-reason{display:flex;align-items:flex-start;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)}
-.match-reason:last-child{border-bottom:none}
-.match-dot{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0;margin-top:5px}
-.match-dot.warn{background:var(--amber)}
-.match-dot.bad{background:var(--red)}
-.match-text{font-size:12.5px;color:var(--ink2);line-height:1.5}
-
-/* SIGNALS */
-.signal-row{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
-.signal-row:last-child{border-bottom:none}
-.sig-icon{font-size:15px;flex-shrink:0;margin-top:1px}
-.sig-body{}
-.sig-label{font-size:12.5px;font-weight:500;color:var(--ink);margin-bottom:2px}
-.sig-detail{font-size:11.5px;color:var(--muted);line-height:1.4}
-
-/* ENRICHMENT */
-.enrich-idle{text-align:center;padding:32px 20px}
-.enrich-idle-icon{font-size:32px;margin-bottom:10px}
-.enrich-idle-title{font-family:var(--font-serif);font-size:15px;color:var(--ink);margin-bottom:6px}
-.enrich-idle-desc{font-size:12px;color:var(--muted);line-height:1.5}
-.enrich-loading{display:flex;flex-direction:column;align-items:center;padding:32px 20px;gap:10px}
-.spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--amber);border-radius:50%;animation:spin 0.7s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.loading-steps{font-size:11.5px;color:var(--muted);text-align:center}
-
-.enrich-section{margin-bottom:16px}
-.enrich-label{font-size:9.5px;font-family:var(--font-mono);color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px}
-.enrich-summary{font-size:13px;color:var(--ink2);line-height:1.6}
-.bullet-list{list-style:none}
-.bullet-list li{font-size:12.5px;color:var(--ink3);padding:3px 0 3px 14px;position:relative;line-height:1.5}
-.bullet-list li::before{content:"▸";position:absolute;left:0;color:var(--amber);font-size:11px;top:4px}
-.kw-wrap{display:flex;flex-wrap:wrap;gap:5px}
-.kw{background:var(--cream2);border:1px solid var(--border);color:var(--ink3);padding:2px 9px;border-radius:12px;font-size:11px}
-.source-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:11.5px}
-.source-row:last-child{border-bottom:none}
-.source-url{color:var(--blue);font-family:var(--font-mono);font-size:10.5px}
-.source-label{color:var(--muted);font-size:10.5px}
-
-/* NOTES */
-.notes-area{
-  width:100%;background:var(--cream2);border:1px solid var(--border);border-radius:7px;
-  padding:10px 13px;color:var(--ink);font-family:var(--font-sans);font-size:13px;
-  outline:none;resize:vertical;min-height:90px;transition:border 0.2s;line-height:1.6;
-}
-.notes-area:focus{border-color:var(--amber);background:#fff}
-.notes-area::placeholder{color:var(--muted)}
-
-/* LISTS PAGE */
-.lists-layout{display:grid;grid-template-columns:260px 1fr;gap:18px}
-.list-entry{
-  padding:11px 13px;border-radius:7px;cursor:pointer;margin-bottom:6px;
-  border:1px solid var(--border);background:#fff;transition:all 0.15s;
-}
-.list-entry:hover{border-color:var(--border2);box-shadow:var(--shadow)}
-.list-entry.on{border-color:var(--amber);background:var(--amber-light)}
-.list-entry-name{font-size:13px;font-weight:500;color:var(--ink);margin-bottom:2px}
-.list-entry-count{font-size:11px;color:var(--muted);font-family:var(--font-mono)}
-
-/* SAVED SEARCHES */
-.saved-entry{
-  background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px 18px;
-  margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:all 0.15s;
-}
-.saved-entry:hover{border-color:var(--border2);box-shadow:var(--shadow)}
-.saved-q{font-size:13px;color:var(--ink);flex:1}
-.saved-q-chips{display:flex;gap:5px;margin-top:4px}
-.saved-chip{background:var(--cream2);border:1px solid var(--border);color:var(--muted);padding:1px 7px;border-radius:10px;font-size:10.5px}
-
-/* THESIS SETTINGS */
-.thesis-form{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-.form-group{display:flex;flex-direction:column;gap:6px}
-.form-label{font-size:11px;font-family:var(--font-mono);color:var(--muted);text-transform:uppercase;letter-spacing:1px}
-.form-input,.form-textarea{
-  background:var(--cream2);border:1px solid var(--border);border-radius:6px;
-  padding:8px 12px;color:var(--ink);font-family:var(--font-sans);font-size:13px;
-  outline:none;transition:border 0.2s;
-}
-.form-input:focus,.form-textarea:focus{border-color:var(--amber);background:#fff}
-.form-textarea{resize:vertical;min-height:60px;line-height:1.5}
-.toggle-grid{display:flex;flex-wrap:wrap;gap:5px}
-.toggle-chip{
-  padding:4px 10px;border-radius:14px;font-size:12px;cursor:pointer;border:1px solid var(--border);
-  color:var(--ink3);background:#fff;transition:all 0.15s;
-}
-.toggle-chip:hover{border-color:var(--border2)}
-.toggle-chip.on{border-color:var(--amber);color:var(--amber);background:var(--amber-light)}
-.form-span{grid-column:1/-1}
-
-/* SCOUT PAGE */
-.scout-header{
-  background:linear-gradient(135deg,var(--ink) 0%,var(--ink2) 100%);
-  border-radius:12px;padding:24px 28px;margin-bottom:20px;color:#fff;
-  display:flex;align-items:center;gap:20px;position:relative;overflow:hidden;
-}
-.scout-header::before{
-  content:'';position:absolute;right:-40px;top:-40px;width:200px;height:200px;
-  border-radius:50%;background:rgba(200,102,10,0.15);
-}
-.scout-header::after{
-  content:'';position:absolute;right:60px;top:30px;width:100px;height:100px;
-  border-radius:50%;background:rgba(200,102,10,0.08);
-}
-.scout-icon{font-size:36px;flex-shrink:0;z-index:1}
-.scout-title{font-family:var(--font-serif);font-size:22px;font-weight:600;margin-bottom:4px;z-index:1}
-.scout-desc{font-size:13px;color:rgba(255,255,255,0.6);z-index:1;line-height:1.5}
-.scout-btn{margin-left:auto;z-index:1;flex-shrink:0}
-
-.scout-result-card{
-  background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;
-  margin-bottom:12px;box-shadow:var(--shadow);transition:all 0.2s;cursor:pointer;
-}
-.scout-result-card:hover{box-shadow:var(--shadow-md);border-color:var(--amber);transform:translateY(-1px)}
-.scout-card-header{display:flex;align-items:flex-start;gap:12px;margin-bottom:10px}
-.scout-card-info{flex:1}
-.scout-card-name{font-family:var(--font-serif);font-size:16px;font-weight:600;color:var(--ink);margin-bottom:3px}
-.scout-card-meta{font-size:11.5px;color:var(--muted);display:flex;gap:8px;align-items:center}
-.scout-match-box{background:var(--amber-light);border:1px solid var(--amber-mid);border-radius:7px;padding:9px 12px;margin-bottom:8px}
-.scout-match-label{font-size:9.5px;font-family:var(--font-mono);color:var(--amber);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:4px}
-.scout-match-text{font-size:12.5px;color:var(--ink2);line-height:1.5}
-.scout-signal{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
-.new-badge{background:var(--green-light);color:var(--green);border:1px solid rgba(26,110,60,0.2);padding:2px 8px;border-radius:10px;font-size:10px;font-weight:500}
-
-/* EMPTY STATE */
-.empty{text-align:center;padding:56px 24px;color:var(--muted)}
-.empty-icon{font-size:36px;margin-bottom:12px;opacity:0.4}
-.empty-title{font-family:var(--font-serif);font-size:16px;color:var(--ink2);margin-bottom:6px}
-.empty-desc{font-size:12.5px;line-height:1.6}
-
-/* BACK */
-.back-btn{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;margin-bottom:16px;transition:color 0.15s}
-.back-btn:hover{color:var(--ink2)}
-
-/* TOAST */
-.toast{
-  position:fixed;bottom:24px;right:24px;background:var(--ink);color:#fff;
-  border-radius:8px;padding:11px 18px;font-size:13px;z-index:9999;
-  display:flex;align-items:center;gap:9px;box-shadow:var(--shadow-lg);
-  animation:toastIn 0.2s ease;
-}
-@keyframes toastIn{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
-.toast-dot{width:7px;height:7px;border-radius:50%;background:var(--amber);flex-shrink:0}
-
-/* INPUT */
-.input{
-  background:#fff;border:1px solid var(--border);border-radius:6px;
-  padding:7px 11px;color:var(--ink);font-family:var(--font-sans);font-size:13px;
-  outline:none;transition:border 0.2s;
-}
-.input:focus{border-color:var(--amber)}
-.input::placeholder{color:var(--muted)}
-
-/* LIST PICKER DROPDOWN */
-.dropdown{
-  position:absolute;right:0;top:calc(100% + 4px);background:#fff;
-  border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow-md);
-  min-width:200px;z-index:100;padding:6px;
-}
-.dropdown-item{
-  padding:8px 11px;border-radius:5px;font-size:13px;cursor:pointer;color:var(--ink2);
-  transition:background 0.1s;
-}
-.dropdown-item:hover{background:var(--cream2)}
-
-/* SCROLLBAR */
-::-webkit-scrollbar{width:5px;height:5px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
-::-webkit-scrollbar-thumb:hover{background:var(--border2)}
-
-/* ANIMATIONS */
-.fade-in{animation:fadeIn 0.25s ease both}
-@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-`;
-
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-const EMOJI = { "Pika Labs":"🎬","Cognition AI":"🤖","Perplexity AI":"🔍","ElevenLabs":"🔊","Mistral AI":"🌊","Supabase":"⚡","Linear":"📐","Retool":"🔧","Anyscale":"🌀","Warp":"💻","Runway":"🎞️","Modal":"☁️","Cursor":"✏️","Together AI":"🔗","Replit":"🌐" };
-const getEmoji = n => EMOJI[n] || "🏢";
-const verdictColor = v => ({ "Strong Match":"verdict-strong","Partial Match":"verdict-partial","Weak Match":"verdict-weak","Not a Fit":"verdict-none" }[v] || "");
-const verdictRingColor = v => ({ "Strong Match":"#1a6e3c","Partial Match":"#b8860b","Weak Match":"#9b8f86","Not a Fit":"#c0392b" }[v] || "#ddd8ce");
-
-function ScoreRing({ score, verdict }) {
-  const r = 13, circ = 2 * Math.PI * r;
-  const fill = score != null ? (circ - (circ * score) / 100) : circ;
-  const color = verdict ? verdictRingColor(verdict) : "#ddd8ce";
-  return (
-    <div className="score-ring">
-      <svg width="32" height="32" viewBox="0 0 32 32">
-        <circle cx="16" cy="16" r={r} fill="none" stroke="var(--border)" strokeWidth="3"/>
-        {score != null && <circle cx="16" cy="16" r={r} fill="none" stroke={color} strokeWidth="3" strokeDasharray={circ} strokeDashoffset={fill} strokeLinecap="round"/>}
-      </svg>
-      <div className="score-ring-num">{score != null ? score : "—"}</div>
+<!-- SIDEBAR -->
+<div id="sidebar">
+  <div class="logo">
+    <div class="logo-text">VentureScope</div>
+    <div class="logo-sub">India Intelligence</div>
+  </div>
+  <nav>
+    <div class="nav-section">Discover</div>
+    <div class="nav-item active" onclick="navigate('companies')">
+      <span class="nav-icon">🔍</span> Companies
     </div>
-  );
-}
-
-function ScoreCell({ enrichData }) {
-  if (!enrichData) return <span className="score-null">Not scored</span>;
-  return (
-    <div className="score-cell">
-      <ScoreRing score={enrichData.thesisScore} verdict={enrichData.thesisVerdict} />
-      <span className={`score-verdict ${verdictColor(enrichData.thesisVerdict)}`}>{enrichData.thesisVerdict}</span>
+    <div class="nav-item" onclick="navigate('profile')">
+      <span class="nav-icon">🏢</span> Profiles
     </div>
-  );
-}
+    <div class="nav-section">Manage</div>
+    <div class="nav-item" onclick="navigate('lists')">
+      <span class="nav-icon">📋</span> Lists
+    </div>
+    <div class="nav-item" onclick="navigate('saved')">
+      <span class="nav-icon">🔖</span> Saved Searches
+    </div>
+    <div class="nav-section">Insights</div>
+    <div class="nav-item" onclick="navigate('signals')">
+      <span class="nav-icon">📡</span> Signals Feed
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="thesis-badge">
+      <div class="thesis-label">Active Thesis</div>
+      B2B SaaS · Fintech · Deep Tech — Series A/B
+    </div>
+  </div>
+</div>
 
-function Toast({ msg, onClose }) {
-  useEffect(() => { const t = setTimeout(onClose, 2800); return () => clearTimeout(t); }, []);
-  return <div className="toast"><div className="toast-dot" />{msg}</div>;
-}
+<!-- MAIN -->
+<div id="main">
+  <!-- TOPBAR -->
+  <div id="topbar">
+    <span class="page-title" id="page-label">Companies</span>
+    <input type="text" id="global-search" placeholder="⌘ Search companies, founders, sectors…" oninput="globalSearch(this.value)">
+    <div class="topbar-actions">
+      <button class="btn btn-outline btn-sm" onclick="openModal('list')">+ New List</button>
+      <span class="badge-count" id="saved-count">0</span>
+      <button class="btn btn-primary btn-sm" onclick="navigate('saved')">Saved</button>
+    </div>
+  </div>
 
-// ─── ENRICH PANEL ─────────────────────────────────────────────────────────────
-function EnrichPanel({ company, thesis, enrichCache, setEnrichCache }) {
-  const key = `enrich_${company.id}`;
-  const [status, setStatus] = useState("idle");
-  const [cachedAt, setCachedAt] = useState(null);
+  <!-- CONTENT -->
+  <div id="content">
 
-  useEffect(() => {
-    const hit = enrichCache[company.id];
-    if (hit) { setStatus("done"); setCachedAt(hit.ts); }
-    else { setStatus("idle"); setCachedAt(null); }
-  }, [company.id]);
-
-  const data = enrichCache[company.id]?.data;
-
-  const run = async () => {
-    setStatus("loading");
-    const result = await enrichCompany(company, thesis);
-    if (result) {
-      const ts = new Date().toISOString();
-      const entry = { data: result, ts };
-      setEnrichCache(c => ({ ...c, [company.id]: entry }));
-      try { localStorage.setItem(key, JSON.stringify(entry)); } catch {}
-      setStatus("done"); setCachedAt(ts);
-    } else { setStatus("error"); }
-  };
-
-  return (
-    <div className="card">
-      <div className="card-title">
-        ⚡ Live Enrichment
-        {cachedAt && <span style={{ color:"var(--muted)", fontWeight:400, textTransform:"none", letterSpacing:0, fontSize:10 }}>cached {new Date(cachedAt).toLocaleTimeString()}</span>}
-        <div className="card-title-action">
-          <button className="btn btn-primary btn-xs" onClick={run} disabled={status==="loading"}>
-            {status==="loading" ? "Enriching…" : status==="done" ? "Re-enrich" : "Enrich"}
-          </button>
-        </div>
+    <!-- COMPANIES PAGE -->
+    <div class="page active" id="page-companies">
+      <div class="filters-row">
+        <input type="text" class="search-input" id="co-search" placeholder="Filter companies…" oninput="filterCompanies()">
+        <select id="filter-sector" onchange="filterCompanies()">
+          <option value="">All Sectors</option>
+          <option>Fintech</option>
+          <option>Edtech</option>
+          <option>Healthtech</option>
+          <option>B2B SaaS</option>
+          <option>D2C / Commerce</option>
+          <option>Deeptech / AI</option>
+          <option>Logistics</option>
+          <option>Agritech</option>
+          <option>Climate / Clean Energy</option>
+        </select>
+        <select id="filter-stage" onchange="filterCompanies()">
+          <option value="">All Stages</option>
+          <option>Pre-Seed</option>
+          <option>Seed</option>
+          <option>Series A</option>
+          <option>Series B</option>
+          <option>Series C+</option>
+        </select>
+        <select id="filter-city" onchange="filterCompanies()">
+          <option value="">All Cities</option>
+          <option>Bengaluru</option>
+          <option>Mumbai</option>
+          <option>Delhi / NCR</option>
+          <option>Hyderabad</option>
+          <option>Pune</option>
+          <option>Chennai</option>
+        </select>
+        <button class="filter-btn" id="btn-thesis" onclick="toggleThesisFilter()">Thesis Match</button>
+        <span class="result-count" id="result-count">25 companies</span>
+        <button class="btn btn-outline btn-sm" onclick="exportCSV()">↓ Export CSV</button>
+        <button class="btn btn-outline btn-sm" onclick="saveCurrentSearch()">🔖 Save Search</button>
       </div>
-
-      {status==="idle" && (
-        <div className="enrich-idle">
-          <div className="enrich-idle-icon">⚡</div>
-          <div className="enrich-idle-title">Thesis-aware enrichment</div>
-          <div className="enrich-idle-desc">Pulls public web data, extracts signals, and scores this company against <strong>{thesis.fundName}'s</strong> investment thesis.</div>
-        </div>
-      )}
-      {status==="loading" && (
-        <div className="enrich-loading">
-          <div className="spinner" />
-          <div className="loading-steps">Scraping public pages<br/>Extracting signals · Scoring against thesis…</div>
-        </div>
-      )}
-      {status==="error" && (
-        <div className="enrich-idle" style={{ color:"var(--red)" }}>
-          <div className="enrich-idle-icon">⚠</div>
-          <div className="enrich-idle-title">Enrichment failed</div>
-          <div className="enrich-idle-desc">Check your API key or try again.</div>
-        </div>
-      )}
-      {status==="done" && data && (
-        <div className="fade-in">
-          <div className="enrich-section">
-            <div className="enrich-label">Summary</div>
-            <div className="enrich-summary">{data.summary}</div>
-          </div>
-          <div className="enrich-section">
-            <div className="enrich-label">What They Do</div>
-            <ul className="bullet-list">{data.whatTheyDo?.map((b,i)=><li key={i}>{b}</li>)}</ul>
-          </div>
-          <div className="enrich-section">
-            <div className="enrich-label">Keywords</div>
-            <div className="kw-wrap">{data.keywords?.map((k,i)=><span key={i} className="kw">{k}</span>)}</div>
-          </div>
-          <div className="enrich-section">
-            <div className="enrich-label">Sources</div>
-            <div>{data.sources?.map((s,i)=>(
-              <div key={i} className="source-row">
-                <span className="source-url">{s.url}</span>
-                <span className="source-label">{s.label}</span>
-              </div>
-            ))}</div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── THESIS MATCH CARD ────────────────────────────────────────────────────────
-function ThesisMatchCard({ data }) {
-  if (!data) return null;
-  return (
-    <div className="card">
-      <div className="card-title">🎯 Thesis Match</div>
-      <div style={{ display:"flex", gap:16, marginBottom:16, alignItems:"center" }}>
-        <div style={{ textAlign:"center" }}>
-          <ScoreRing score={data.thesisScore} verdict={data.thesisVerdict} />
-        </div>
-        <div>
-          <div className={`score-verdict ${verdictColor(data.thesisVerdict)}`} style={{ fontSize:15, fontWeight:600, marginBottom:2 }}>{data.thesisVerdict}</div>
-          <div style={{ fontSize:12, color:"var(--muted)" }}>Thesis alignment score</div>
-        </div>
-      </div>
-      {data.matchReasons?.length > 0 && (
-        <div style={{ marginBottom:12 }}>
-          <div className="enrich-label" style={{ marginBottom:8 }}>Why it matches</div>
-          {data.matchReasons.map((r,i)=>(
-            <div key={i} className="match-reason">
-              <div className="match-dot" />
-              <div className="match-text">{r}</div>
-            </div>
-          ))}
-        </div>
-      )}
-      {data.watchouts?.length > 0 && (
-        <div>
-          <div className="enrich-label" style={{ marginBottom:8 }}>Watch-outs</div>
-          {data.watchouts.map((w,i)=>(
-            <div key={i} className="match-reason">
-              <div className="match-dot warn" />
-              <div className="match-text">{w}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── SIGNALS CARD ─────────────────────────────────────────────────────────────
-function SignalsCard({ company, enrichData }) {
-  const mockSignals = company.tags.slice(0,3).map((t,i)=>({ label: t.replace(/-/g," "), type:"positive", detail:"Identified from company profile and public data." }));
-  const signals = enrichData?.signals || mockSignals;
-  const icon = { positive:"🟢", neutral:"🟡", negative:"🔴" };
-  return (
-    <div className="card">
-      <div className="card-title">📡 Signals</div>
-      {signals.map((s,i)=>(
-        <div key={i} className="signal-row">
-          <div className="sig-icon">{icon[s.type]||"⚪"}</div>
-          <div className="sig-body">
-            <div className="sig-label">{s.label}</div>
-            <div className="sig-detail">{s.detail}</div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── COMPANY PROFILE ──────────────────────────────────────────────────────────
-function ProfilePage({ company, onBack, lists, onSaveToList, enrichCache, setEnrichCache, thesis, toast }) {
-  const enrichData = enrichCache[company.id]?.data;
-  const [note, setNote] = useState(()=>{ try{ return localStorage.getItem(`note_${company.id}`)||""; }catch{return "";} });
-  const [picker, setPicker] = useState(false);
-  const pickerRef = useRef(null);
-
-  useEffect(()=>{
-    const handler = e => { if(pickerRef.current && !pickerRef.current.contains(e.target)) setPicker(false); };
-    document.addEventListener("mousedown", handler);
-    return ()=>document.removeEventListener("mousedown", handler);
-  },[]);
-
-  const saveNote = () => { try{ localStorage.setItem(`note_${company.id}`,note); toast("Note saved"); }catch{} };
-
-  const scoreDisplay = enrichData ? (
-    <div className="profile-score-block">
-      <div className="psb-label">Thesis Score</div>
-      <div className="psb-score" style={{ color: verdictRingColor(enrichData.thesisVerdict) }}>{enrichData.thesisScore}</div>
-      <div className={`psb-verdict ${verdictColor(enrichData.thesisVerdict)}`}>{enrichData.thesisVerdict}</div>
-    </div>
-  ) : (
-    <div className="profile-score-block">
-      <div className="psb-label">Thesis Score</div>
-      <div className="psb-score" style={{ color:"var(--border2)", fontSize:28 }}>—</div>
-      <div style={{ fontSize:11, color:"var(--muted)", marginTop:4 }}>Not enriched</div>
-    </div>
-  );
-
-  return (
-    <div className="page fade-in">
-      <div className="back-btn" onClick={onBack}>← Back to Companies</div>
-
-      <div className="profile-hero">
-        <div className="profile-avatar">{getEmoji(company.name)}</div>
-        <div className="profile-info">
-          <div className="profile-name">{company.name}</div>
-          <div className="profile-meta">
-            <span>📍 {company.location}</span>
-            <span>·</span>
-            <a href={`https://${company.domain}`} target="_blank" rel="noopener">{company.domain}</a>
-            <span>·</span>
-            <span>Founded {company.founded}</span>
-            <span>·</span>
-            <span className="badge badge-stage">{company.stage}</span>
-            <span className="badge badge-sector">{company.sector}</span>
-          </div>
-          <div className="profile-tags">{company.tags.map(t=><span key={t} className="tag">{t}</span>)}</div>
-        </div>
-        {scoreDisplay}
-        <div style={{ position:"relative" }} ref={pickerRef}>
-          <button className="btn btn-secondary" onClick={()=>setPicker(v=>!v)}>+ Save to List</button>
-          {picker && (
-            <div className="dropdown">
-              {lists.length===0 && <div style={{padding:"10px 12px",fontSize:12,color:"var(--muted)"}}>No lists yet. Create one first.</div>}
-              {lists.map(l=>(
-                <div key={l.id} className="dropdown-item" onClick={()=>{ onSaveToList(l.id,company); setPicker(false); toast(`Added to "${l.name}"`); }}>
-                  📋 {l.name}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="two-col">
-        <div className="stack">
-          <div className="card">
-            <div className="card-title">Overview</div>
-            <div className="stat-grid">
-              <div className="stat-item"><div className="stat-label">ARR</div><div className="stat-val" style={{color:"var(--amber)"}}>${company.arr}M</div></div>
-              <div className="stat-item"><div className="stat-label">Headcount</div><div className="stat-val">{company.hc}</div></div>
-              <div className="stat-item"><div className="stat-label">Founded</div><div className="stat-val">{company.founded}</div></div>
-              <div className="stat-item"><div className="stat-label">Stage</div><div className="stat-val" style={{fontSize:15}}>{company.stage}</div></div>
-            </div>
-          </div>
-          <ThesisMatchCard data={enrichData} />
-          <SignalsCard company={company} enrichData={enrichData} />
-          <div className="card">
-            <div className="card-title">
-              📝 Notes
-              <div className="card-title-action"><button className="btn btn-ghost btn-xs" onClick={saveNote}>Save</button></div>
-            </div>
-            <textarea className="notes-area" placeholder="Investment thesis, key contacts, follow-ups, red flags…" value={note} onChange={e=>setNote(e.target.value)} rows={4} />
-          </div>
-        </div>
-        <div className="stack">
-          <EnrichPanel company={company} thesis={thesis} enrichCache={enrichCache} setEnrichCache={setEnrichCache} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── COMPANIES PAGE ───────────────────────────────────────────────────────────
-function CompaniesPage({ onSelect, globalQuery, enrichCache, thesis }) {
-  const [q, setQ] = useState(globalQuery||"");
-  const [sector, setSector] = useState("All");
-  const [stage, setStage] = useState("All");
-  const [sortKey, setSortKey] = useState("name");
-  const [sortDir, setSortDir] = useState(1);
-  const [page, setPage] = useState(1);
-  const [thesisOnly, setThesisOnly] = useState(false);
-
-  useEffect(()=>{ if(globalQuery) setQ(globalQuery); },[globalQuery]);
-
-  const thesisMatch = useCallback((c) => {
-    return thesis.sectors.includes(c.sector) && thesis.stages.includes(c.stage);
-  },[thesis]);
-
-  const filtered = useMemo(()=>{
-    let d = MOCK_COMPANIES.filter(c=>{
-      if(q){
-        const qq=q.toLowerCase();
-        if(!c.name.toLowerCase().includes(qq)&&!c.sector.toLowerCase().includes(qq)&&!c.tags.some(t=>t.includes(qq))&&!c.domain.includes(qq)) return false;
-      }
-      if(sector!=="All"&&c.sector!==sector) return false;
-      if(stage!=="All"&&c.stage!==stage) return false;
-      if(thesisOnly&&!thesisMatch(c)) return false;
-      return true;
-    });
-    d.sort((a,b)=>{
-      const av=sortKey==="score" ? (enrichCache[a.id]?.data?.thesisScore||0) : (a[sortKey]??0);
-      const bv=sortKey==="score" ? (enrichCache[b.id]?.data?.thesisScore||0) : (b[sortKey]??0);
-      return typeof av==="string" ? sortDir*av.localeCompare(bv) : sortDir*(av-bv);
-    });
-    return d;
-  },[q,sector,stage,sortKey,sortDir,thesisOnly,enrichCache,thesisMatch]);
-
-  const pages = Math.ceil(filtered.length/PAGE_SZ);
-  const rows = filtered.slice((page-1)*PAGE_SZ, page*PAGE_SZ);
-  const sort = k=>{ if(sortKey===k) setSortDir(d=>-d); else{setSortKey(k);setSortDir(1);} setPage(1); };
-  const Arr = ({k})=>sortKey===k?(sortDir===1?"↑":"↓"):<span style={{opacity:.3}}>↕</span>;
-
-  return (
-    <div className="page fade-in">
-      <div className="page-header">
-        <div>
-          <div className="page-title">Companies</div>
-          <div className="page-subtitle">{MOCK_COMPANIES.length} companies in database · {filtered.length} match current filters</div>
-        </div>
-      </div>
-
-      <div className="filters-row">
-        <div className="search-wrap" style={{maxWidth:260, marginRight:4}}>
-          <span className="search-icon">⌕</span>
-          <input className="search-input" placeholder="Search…" value={q} onChange={e=>{setQ(e.target.value);setPage(1);}} />
-        </div>
-        <div className="filter-divider"/>
-        <div className="filter-group">
-          <span className="filter-label">Sector</span>
-          {SECTORS.map(s=><div key={s} className={`chip ${sector===s?"on":""}`} onClick={()=>{setSector(s);setPage(1);}}>{s}</div>)}
-        </div>
-        <div className="filter-divider"/>
-        <div className="filter-group">
-          <span className="filter-label">Stage</span>
-          {STAGES.map(s=><div key={s} className={`chip ${stage===s?"on":""}`} onClick={()=>{setStage(s);setPage(1);}}>{s}</div>)}
-        </div>
-        <div className="filter-divider"/>
-        <div className={`chip ${thesisOnly?"on":""}`} onClick={()=>{setThesisOnly(v=>!v);setPage(1);}}>🎯 Thesis match only</div>
-        <span className="result-count">{filtered.length} results</span>
-      </div>
-
-      <div className="table-card">
-        <table>
+      <div class="table-wrap">
+        <table id="companies-table">
           <thead>
             <tr>
-              <th onClick={()=>sort("name")} className={sortKey==="name"?"sorted":""}>Company <Arr k="name"/></th>
-              <th onClick={()=>sort("sector")} className={sortKey==="sector"?"sorted":""}>Sector <Arr k="sector"/></th>
-              <th onClick={()=>sort("stage")} className={sortKey==="stage"?"sorted":""}>Stage <Arr k="stage"/></th>
-              <th onClick={()=>sort("hc")} className={sortKey==="hc"?"sorted":""}>Headcount <Arr k="hc"/></th>
-              <th onClick={()=>sort("arr")} className={sortKey==="arr"?"sorted":""}>ARR <Arr k="arr"/></th>
-              <th onClick={()=>sort("score")} className={sortKey==="score"?"sorted":""}>Thesis Score <Arr k="score"/></th>
+              <th onclick="sortTable('name')">Company <span class="sort-arrow">↕</span></th>
+              <th onclick="sortTable('sector')">Sector <span class="sort-arrow">↕</span></th>
+              <th onclick="sortTable('stage')">Stage <span class="sort-arrow">↕</span></th>
+              <th onclick="sortTable('city')">City <span class="sort-arrow">↕</span></th>
+              <th onclick="sortTable('founded')">Founded <span class="sort-arrow">↕</span></th>
+              <th onclick="sortTable('funding')">Funding <span class="sort-arrow">↕</span></th>
+              <th onclick="sortTable('score')">Score <span class="sort-arrow">↕</span></th>
+              <th>Actions</th>
             </tr>
           </thead>
-          <tbody>
-            {rows.map(c=>(
-              <tr key={c.id} onClick={()=>onSelect(c)}>
-                <td>
-                  <div className="td-company">
-                    <div className="co-avatar">{getEmoji(c.name)}</div>
-                    <div>
-                      <div className="co-name">{c.name}</div>
-                      <div className="co-domain">{c.domain}</div>
-                    </div>
-                  </div>
-                </td>
-                <td><span className="badge badge-sector">{c.sector}</span></td>
-                <td><span className="badge badge-stage">{c.stage}</span></td>
-                <td style={{color:"var(--ink3)",fontFamily:"var(--font-mono)",fontSize:12}}>{c.hc}</td>
-                <td style={{color:"var(--amber)",fontFamily:"var(--font-mono)",fontWeight:500,fontSize:12}}>${c.arr}M</td>
-                <td><ScoreCell enrichData={enrichCache[c.id]?.data} /></td>
-              </tr>
-            ))}
-            {rows.length===0 && <tr><td colSpan={6}><div className="empty"><div className="empty-icon">🔍</div><div className="empty-title">No companies found</div><div className="empty-desc">Try adjusting your filters or search query.</div></div></td></tr>}
-          </tbody>
+          <tbody id="companies-body"></tbody>
         </table>
       </div>
-
-      {pages>1 && (
-        <div className="pagination">
-          <span className="pag-info">{filtered.length} companies · Page {page} of {pages}</span>
-          <div className="pag-buttons">
-            <button className="pag-btn" disabled={page===1} onClick={()=>setPage(p=>p-1)}>← Prev</button>
-            {Array.from({length:pages},(_,i)=>(
-              <button key={i} className={`pag-btn ${page===i+1?"on":""}`} onClick={()=>setPage(i+1)}>{i+1}</button>
-            ))}
-            <button className="pag-btn" disabled={page===pages} onClick={()=>setPage(p=>p+1)}>Next →</button>
-          </div>
-        </div>
-      )}
+      <div class="pagination" id="pagination"></div>
     </div>
-  );
-}
 
-// ─── SCOUT PAGE ───────────────────────────────────────────────────────────────
-function ScoutPage({ thesis, onSelectCompany, toast }) {
-  const [status, setStatus] = useState("idle");
-  const [results, setResults] = useState([]);
+    <!-- PROFILE PAGE -->
+    <div class="page" id="page-profile">
+      <div class="back-btn" onclick="navigate('companies')">← Back to Companies</div>
+      <div class="profile-header" id="profile-header"></div>
+      <div class="profile-grid" id="profile-grid"></div>
+    </div>
 
-  const run = async () => {
-    setStatus("loading");
-    const existing = MOCK_COMPANIES.map(c=>c.name);
-    const suggestions = await scoutCompanies(thesis, existing);
-    if (suggestions && Array.isArray(suggestions)) {
-      setResults(suggestions.map((s,i)=>({ ...s, id:`scout_${i}`, score:null })));
-      setStatus("done");
-    } else {
-      setStatus("error");
-    }
-  };
-
-  return (
-    <div className="page fade-in">
-      <div className="scout-header">
-        <div className="scout-icon">🛰️</div>
+    <!-- LISTS PAGE -->
+    <div class="page" id="page-lists">
+      <div class="lists-header">
         <div>
-          <div className="scout-title">AI Scout — {thesis.fundName}</div>
-          <div className="scout-desc">
-            Finds real companies that match your thesis: <em>{thesis.focus}</em><br/>
-            Sectors: {thesis.sectors.join(" · ")} · Stages: {thesis.stages.join(", ")}
-          </div>
+          <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:18px;">My Lists</div>
+          <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">Curate and share company shortlists</div>
         </div>
-        <div className="scout-btn">
-          <button className="btn btn-primary" onClick={run} disabled={status==="loading"}>
-            {status==="loading" ? "Scouting…" : status==="done" ? "Scout again" : "⚡ Run Scout"}
-          </button>
-        </div>
+        <button class="btn btn-primary" onclick="openModal('list')">+ Create List</button>
       </div>
-
-      {status==="idle" && (
-        <div className="empty">
-          <div className="empty-icon">🛰️</div>
-          <div className="empty-title">Ready to scout</div>
-          <div className="empty-desc">Click "Run Scout" to find companies that match {thesis.fundName}'s thesis using AI.<br/>Results are explained — you'll see exactly why each company was surfaced.</div>
-        </div>
-      )}
-      {status==="loading" && (
-        <div className="empty">
-          <div style={{marginBottom:14,display:"flex",justifyContent:"center"}}><div className="spinner" style={{width:24,height:24}}/></div>
-          <div className="empty-title">Scanning the market…</div>
-          <div className="empty-desc">Searching for companies that match your thesis.<br/>This takes a few seconds.</div>
-        </div>
-      )}
-      {status==="error" && (
-        <div className="empty" style={{color:"var(--red)"}}>
-          <div className="empty-icon">⚠</div>
-          <div className="empty-title">Scout failed</div>
-          <div className="empty-desc">Check your API key and try again.</div>
-        </div>
-      )}
-      {status==="done" && results.map((c,i)=>(
-        <div key={i} className="scout-result-card fade-in" style={{animationDelay:`${i*0.06}s`}}>
-          <div className="scout-card-header">
-            <div className="co-avatar" style={{width:36,height:36,fontSize:18}}>{getEmoji(c.name)}</div>
-            <div className="scout-card-info">
-              <div className="scout-card-name">{c.name} <span className="new-badge">NEW</span></div>
-              <div className="scout-card-meta">
-                <span className="badge badge-sector">{c.sector}</span>
-                <span className="badge badge-stage">{c.stage}</span>
-                <span style={{color:"var(--muted)",fontSize:11}}>📍 {c.location} · {c.domain} · Est. ${c.arr}M ARR</span>
-              </div>
-            </div>
-            <div style={{display:"flex",gap:6,flexShrink:0}}>
-              <button className="btn btn-primary btn-xs" onClick={()=>{ toast(`Added ${c.name} to database`); }}>+ Add to DB</button>
-            </div>
-          </div>
-          <div className="scout-match-box">
-            <div className="scout-match-label">🎯 Why this matches {thesis.fundName}</div>
-            <div className="scout-match-text">{c.whyMatch}</div>
-          </div>
-          <div className="scout-signal">📡 <strong>Signal:</strong>&nbsp;{c.signal}</div>
-          <div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:4}}>
-            {c.tags?.map((t,j)=><span key={j} className="tag">{t}</span>)}
-          </div>
-        </div>
-      ))}
+      <div id="lists-container"></div>
     </div>
-  );
-}
 
-// ─── LISTS PAGE ───────────────────────────────────────────────────────────────
-function ListsPage({ lists, addList, removeFromList, deleteList, toast, onOpenCompany }) {
-  const [sel, setSel] = useState(null);
-  const [newName, setNewName] = useState("");
-  const active = lists.find(l=>l.id===sel);
-
-  const create = () => {
-    if(!newName.trim()) return;
-    addList(newName.trim()); toast(`List "${newName.trim()}" created`); setNewName("");
-  };
-
-  const exportCSV = (list) => {
-    const csv = ["name,domain,sector,stage,arr,hc",...list.companies.map(c=>`${c.name},${c.domain},${c.sector},${c.stage},${c.arr},${c.hc}`)].join("\n");
-    const a=document.createElement("a"); a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(csv); a.download=`${list.name}.csv`; a.click();
-    toast("CSV exported");
-  };
-
-  return (
-    <div className="page fade-in">
-      <div className="page-header">
-        <div><div className="page-title">Lists</div><div className="page-subtitle">Organize and track companies across your workflow</div></div>
-      </div>
-      <div className="lists-layout">
+    <!-- SAVED SEARCHES PAGE -->
+    <div class="page" id="page-saved">
+      <div class="lists-header">
         <div>
-          <div style={{display:"flex",gap:6,marginBottom:12}}>
-            <input className="input" style={{flex:1}} placeholder="New list name…" value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&create()} />
-            <button className="btn btn-primary btn-sm" onClick={create}>+ Create</button>
-          </div>
-          {lists.length===0 && <div className="empty" style={{padding:32}}><div className="empty-icon">📋</div><div className="empty-desc">No lists yet.</div></div>}
-          {lists.map(l=>(
-            <div key={l.id} className={`list-entry ${sel===l.id?"on":""}`} onClick={()=>setSel(l.id)}>
-              <div className="list-entry-name">📋 {l.name}</div>
-              <div className="list-entry-count">{l.companies?.length||0} companies</div>
-            </div>
-          ))}
-        </div>
-        <div>
-          {!active && <div className="empty"><div className="empty-icon">📋</div><div className="empty-title">Select a list</div><div className="empty-desc">Choose a list to view its companies.</div></div>}
-          {active && (
-            <div className="fade-in">
-              <div style={{display:"flex",alignItems:"center",marginBottom:16,gap:8}}>
-                <div style={{fontFamily:"var(--font-serif)",fontSize:20,fontWeight:600}}>{active.name}</div>
-                <div style={{marginLeft:"auto",display:"flex",gap:6}}>
-                  <button className="btn btn-secondary btn-sm" onClick={()=>exportCSV(active)}>Export CSV</button>
-                  <button className="btn btn-danger btn-sm" onClick={()=>{deleteList(active.id);setSel(null);toast("List deleted");}}>Delete</button>
-                </div>
-              </div>
-              {active.companies?.length===0 ? (
-                <div className="empty"><div className="empty-icon">🏢</div><div className="empty-desc">No companies yet. Save companies from their profile page.</div></div>
-              ) : (
-                <div className="table-card">
-                  <table>
-                    <thead><tr><th>Company</th><th>Sector</th><th>Stage</th><th>ARR</th><th></th></tr></thead>
-                    <tbody>
-                      {active.companies.map(c=>(
-                        <tr key={c.id}>
-                          <td><div className="td-company"><div className="co-avatar">{getEmoji(c.name)}</div><div><div className="co-name">{c.name}</div><div className="co-domain">{c.domain}</div></div></div></td>
-                          <td><span className="badge badge-sector">{c.sector}</span></td>
-                          <td><span className="badge badge-stage">{c.stage}</span></td>
-                          <td style={{color:"var(--amber)",fontFamily:"var(--font-mono)",fontSize:12}}>${c.arr}M</td>
-                          <td><button className="btn btn-ghost btn-xs" onClick={()=>{removeFromList(active.id,c.id);toast("Removed");}}>Remove</button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
+          <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:18px;">Saved Searches</div>
+          <div style="color:var(--text-muted);font-size:12px;margin-top:4px;">Re-run your thesis-driven filters</div>
         </div>
       </div>
+      <div id="saved-container"></div>
     </div>
-  );
+
+    <!-- SIGNALS FEED PAGE -->
+    <div class="page" id="page-signals">
+      <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:18px;margin-bottom:20px;">Signals Feed</div>
+      <div id="signals-feed"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- MODAL -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal" id="modal-box">
+    <div class="modal-title" id="modal-title">Create List</div>
+    <input type="text" class="modal-input" id="modal-input1" placeholder="List name">
+    <input type="text" class="modal-input" id="modal-input2" placeholder="Description (optional)">
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="modal-confirm" onclick="confirmModal()">Create</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ===== DATA =====
+const COMPANIES = [
+  {id:1, name:"Zepto", emoji:"⚡", domain:"zepto.com", sector:"D2C / Commerce", stage:"Series C+", city:"Mumbai", founded:2021, funding:"₹3,200 Cr", fundingNum:3200, score:92, description:"Quick-commerce startup delivering groceries in under 10 minutes via a dark-store model across 10 Indian cities.", founders:"Aadit Palicha, Kaivalya Vohra", employees:"5,000+", investors:"Y Combinator, Nexus Venture Partners, Kaiser Permanente", website:"https://zepto.com", signals:[{text:"Expanded to 6 new cities in Q1 2025", color:"#22c55e", date:"Mar 2025"},{text:"Launched ZeptoNow for electronics category", color:"#3b82f6", date:"Jan 2025"},{text:"Raised $350M Series D round", color:"#f97316", date:"Nov 2024"},{text:"Crossed 5 lakh daily orders milestone", color:"#a855f7", date:"Sep 2024"}], thesis:true},
+  {id:2, name:"Krutrim", emoji:"🤖", domain:"krutrim.com", sector:"Deeptech / AI", stage:"Series A", city:"Bengaluru", founded:2023, funding:"₹440 Cr", fundingNum:440, score:88, description:"India's first AI unicorn building large language models trained on Indic languages and scripts.", founders:"Bhavish Aggarwal", employees:"300+", investors:"Ola, Matrix Partners India", website:"https://krutrim.com", signals:[{text:"Launched Krutrim Cloud with GPU access for startups", color:"#22c55e", date:"Feb 2025"},{text:"Released Krutrim-2 model with 70B parameters", color:"#3b82f6", date:"Dec 2024"},{text:"Partnership with government for Bhashini integration", color:"#f97316", date:"Oct 2024"}], thesis:true},
+  {id:3, name:"Sarvam AI", emoji:"🗣️", domain:"sarvam.ai", sector:"Deeptech / AI", stage:"Series A", city:"Bengaluru", founded:2023, funding:"₹230 Cr", fundingNum:230, score:90, description:"Building full-stack generative AI for India with speech, language and developer APIs for 22 official Indian languages.", founders:"Vivek Raghavan, Pratyush Kumar", employees:"150+", investors:"Lightspeed Venture Partners, Peak XV Partners", website:"https://sarvam.ai", signals:[{text:"Deployed voice AI for State Bank of India", color:"#22c55e", date:"Mar 2025"},{text:"Open-sourced OpenHathi multilingual LLM", color:"#3b82f6", date:"Jan 2025"},{text:"Won government AI mission grant of ₹50 Cr", color:"#f97316", date:"Nov 2024"}], thesis:true},
+  {id:4, name:"Ather Energy", emoji:"🛵", domain:"atherenergy.com", sector:"Climate / Clean Energy", stage:"Series C+", city:"Bengaluru", founded:2013, funding:"₹4,300 Cr", fundingNum:4300, score:82, description:"Electric scooter manufacturer with its own charging network, Ather Grid, across 100+ Indian cities.", founders:"Tarun Mehta, Swapnil Jain", employees:"3,200+", investors:"Hero MotoCorp, GIC Singapore, NIIF", website:"https://atherenergy.com", signals:[{text:"Launched Ather Rizta family scooter at ₹1.10 lakh", color:"#22c55e", date:"Apr 2025"},{text:"Filed IPO DRHP with SEBI", color:"#3b82f6", date:"Jan 2025"},{text:"Crossed 2 lakh cumulative sales mark", color:"#a855f7", date:"Oct 2024"}], thesis:false},
+  {id:5, name:"Perfios", emoji:"📊", domain:"perfios.com", sector:"Fintech", stage:"Series C+", city:"Bengaluru", founded:2008, funding:"₹2,100 Cr", fundingNum:2100, score:85, description:"B2B fintech platform for real-time financial document analysis, bank statement analysis and credit underwriting for lenders.", founders:"V R Govindarajan, Debasish Chakraborty", employees:"2,500+", investors:"Warburg Pincus, Teachers' Venture Growth, Bessemer", website:"https://perfios.com", signals:[{text:"Acquired Karza Technologies for ₹450 Cr", color:"#22c55e", date:"Feb 2025"},{text:"Crossed 1,000 enterprise clients globally", color:"#3b82f6", date:"Dec 2024"},{text:"Launched Perfios for Southeast Asia expansion", color:"#f97316", date:"Sep 2024"}], thesis:true},
+  {id:6, name:"Scaler", emoji:"🎓", domain:"scaler.com", sector:"Edtech", stage:"Series B", city:"Bengaluru", founded:2019, funding:"₹680 Cr", fundingNum:680, score:79, description:"Online tech education platform offering intensive programs in software engineering, data science, and product management.", founders:"Abhimanyu Saxena, Anshuman Singh", employees:"1,800+", investors:"Peak XV Partners, Tiger Global", website:"https://scaler.com", signals:[{text:"Launched Scaler School of Technology, a 4-year degree", color:"#22c55e", date:"Mar 2025"},{text:"Crossed 15,000 alumni employed at top tech companies", color:"#3b82f6", date:"Jan 2025"},{text:"Expanded to UAE and Singapore markets", color:"#f97316", date:"Aug 2024"}], thesis:true},
+  {id:7, name:"Stashfin", emoji:"💳", domain:"stashfin.com", sector:"Fintech", stage:"Series B", city:"Delhi / NCR", founded:2016, funding:"₹570 Cr", fundingNum:570, score:74, description:"Credit line fintech platform targeting underbanked Indians using alternative data for credit scoring and instant disbursal.", founders:"Tushar Aggarwal", employees:"700+", investors:"Uncorrelated Ventures, Snow Leopard, Prime Venture Partners", website:"https://stashfin.com", signals:[{text:"Launched co-branded credit card with SBM Bank", color:"#22c55e", date:"Feb 2025"},{text:"Disbursed over ₹3,000 Cr in cumulative loans", color:"#3b82f6", date:"Nov 2024"}], thesis:true},
+  {id:8, name:"Nua", emoji:"🌸", domain:"nua.com", sector:"D2C / Commerce", stage:"Series A", city:"Mumbai", founded:2017, funding:"₹95 Cr", fundingNum:95, score:70, description:"D2C menstrual health and personal care brand targeting women with chemical-free, sustainable period products.", founders:"Ritesh Tiwari", employees:"200+", investors:"Lightbox Ventures, Kae Capital, Sahil Barua (Delhivery)", website:"https://nua.com", signals:[{text:"Expanded into skincare and wellness with 12 new SKUs", color:"#22c55e", date:"Jan 2025"},{text:"Reached profitability milestone in FY2024-25", color:"#3b82f6", date:"Oct 2024"}], thesis:false},
+  {id:9, name:"Agnikul Cosmos", emoji:"🚀", domain:"agnikul.com", sector:"Deeptech / AI", stage:"Series B", city:"Chennai", founded:2017, funding:"₹460 Cr", fundingNum:460, score:86, description:"Space startup developing Agnilet, the world's first single-piece 3D-printed semi-cryo rocket engine for small satellite launches.", founders:"Srinath Ravichandran, Moin SPM", employees:"250+", investors:"Mayfield India, pi Ventures, Speciale Invest", website:"https://agnikul.com", signals:[{text:"Completed second launchpad test at ISRO Sriharikota", color:"#22c55e", date:"Mar 2025"},{text:"Signed 4 commercial payload agreements", color:"#3b82f6", date:"Jan 2025"},{text:"Received ISRO IN-SPACe launch authorization", color:"#f97316", date:"Aug 2024"}], thesis:true},
+  {id:10, name:"Vahdam India", emoji:"🍵", domain:"vahdamteas.com", sector:"D2C / Commerce", stage:"Series C+", city:"Delhi / NCR", founded:2015, funding:"₹320 Cr", fundingNum:320, score:71, description:"Direct-to-consumer premium Indian tea and superfoods brand shipping to 100+ countries, sourcing directly from farmers.", founders:"Bala Sarda", employees:"500+", investors:"DSG Consumer Partners, IFC, Rainfall Ventures", website:"https://vahdamteas.com", signals:[{text:"Launched Vahdam-branded stores in 3 Indian malls", color:"#22c55e", date:"Feb 2025"},{text:"Crossed $50M ARR with 80% from exports", color:"#3b82f6", date:"Oct 2024"}], thesis:false},
+  {id:11, name:"Zetwerk", emoji:"🏭", domain:"zetwerk.com", sector:"B2B SaaS", stage:"Series C+", city:"Bengaluru", founded:2018, funding:"₹3,600 Cr", fundingNum:3600, score:87, description:"B2B manufacturing network connecting buyers with global manufacturers for custom components across aerospace, defence and EV.", founders:"Amrit Acharya, Srinath Ramakkrushnan", employees:"3,000+", investors:"Greenoaks Capital, Lightspeed, D1 Capital", website:"https://zetwerk.com", signals:[{text:"Secured $100M defence manufacturing contract", color:"#22c55e", date:"Apr 2025"},{text:"Opened manufacturing hub in Vietnam for global supply", color:"#3b82f6", date:"Jan 2025"},{text:"Launched ZetwerkGo for SME procurement", color:"#f97316", date:"Sep 2024"}], thesis:true},
+  {id:12, name:"Nium", emoji:"💸", domain:"nium.com", sector:"Fintech", stage:"Series C+", city:"Mumbai", founded:2015, funding:"₹2,900 Cr", fundingNum:2900, score:83, description:"Global B2B payments infrastructure unicorn enabling businesses to send, spend and receive funds in 100+ currencies.", founders:"Prajit Nanu, Anirban Mukherjee", employees:"1,500+", investors:"Visa, Riverwood Capital, Temasek", website:"https://nium.com", signals:[{text:"Partnered with NPCI to bring UPI to 10 new countries", color:"#22c55e", date:"Mar 2025"},{text:"Crossed $1B in transaction volumes per month", color:"#3b82f6", date:"Nov 2024"}], thesis:true},
+  {id:13, name:"Rapido", emoji:"🏍️", domain:"rapido.bike", sector:"Logistics", stage:"Series C+", city:"Bengaluru", founded:2015, funding:"₹1,600 Cr", fundingNum:1600, score:76, description:"Bike taxi and auto-rickshaw platform across 100+ Indian cities, with Rapido Auto growing 3x YoY.", founders:"Aravind Sanka, Rishikesh SR, Pavan Guntupalli", employees:"1,000+", investors:"Swiggy, Nexus Venture Partners, Shell Ventures", website:"https://rapido.bike", signals:[{text:"Launched Rapido Cab services in 10 cities", color:"#22c55e", date:"Feb 2025"},{text:"Onboarded 25 lakh driver-partners on platform", color:"#3b82f6", date:"Dec 2024"}], thesis:false},
+  {id:14, name:"Locus", emoji:"📦", domain:"locus.sh", sector:"B2B SaaS", stage:"Series C+", city:"Bengaluru", founded:2015, funding:"₹640 Cr", fundingNum:640, score:80, description:"AI-powered dispatch and logistics optimisation platform used by enterprises across APAC, Middle East and Americas.", founders:"Nishith Rastogi, Geet Garg", employees:"600+", investors:"Qualcomm Ventures, Falcon Edge, Tiger Global", website:"https://locus.sh", signals:[{text:"Expanded to 22 countries with Middle East HQ in Dubai", color:"#22c55e", date:"Mar 2025"},{text:"Achieved EBITDA breakeven across all regions", color:"#3b82f6", date:"Jan 2025"}], thesis:true},
+  {id:15, name:"Niramai", emoji:"🏥", domain:"niramai.com", sector:"Healthtech", stage:"Series A", city:"Bengaluru", founded:2016, funding:"₹120 Cr", fundingNum:120, score:77, description:"AI-powered breast cancer screening solution using thermal imaging for early and low-cost detection without radiation.", founders:"Geetha Manjunath, Nidhi Mathur", employees:"100+", investors:"Flipkart co-founders, pi Ventures, Shell Foundation", website:"https://niramai.com", signals:[{text:"Received CDSCO approval for clinical use", color:"#22c55e", date:"Jan 2025"},{text:"Deployed in 150+ hospitals and clinics across India", color:"#3b82f6", date:"Oct 2024"},{text:"Partnership with NHM Maharashtra for rural screening", color:"#f97316", date:"Aug 2024"}], thesis:true},
+  {id:16, name:"Vyapar", emoji:"🧾", domain:"vyapar.in", sector:"B2B SaaS", stage:"Series A", city:"Bengaluru", founded:2016, funding:"₹180 Cr", fundingNum:180, score:81, description:"GST-compliant accounting and billing app for Indian small businesses, with 1 crore+ registered business users.", founders:"Sumit Agarwal, Shubham Agarwal", employees:"400+", investors:"WestBridge Capital, India Quotient", website:"https://vyapar.in", signals:[{text:"Launched Vyapar Pay for UPI-based collections", color:"#22c55e", date:"Feb 2025"},{text:"Crossed 1 crore registered businesses milestone", color:"#3b82f6", date:"Nov 2024"},{text:"Integrated with GSTN for auto-filing", color:"#f97316", date:"Sep 2024"}], thesis:true},
+  {id:17, name:"CropIn", emoji:"🌾", domain:"cropin.com", sector:"Agritech", stage:"Series B", city:"Bengaluru", founded:2010, funding:"₹350 Cr", fundingNum:350, score:75, description:"AgriTech SaaS platform enabling data-driven farming decisions for agribusinesses across 56 countries.", founders:"Krishna Kumar, Kunal Prasad", employees:"450+", investors:"ABC World Asia, Chiratae Ventures, SBI", website:"https://cropin.com", signals:[{text:"Signed $12M deal with World Food Programme", color:"#22c55e", date:"Mar 2025"},{text:"Launched AiSat: satellite+AI crop monitoring product", color:"#3b82f6", date:"Dec 2024"}], thesis:true},
+  {id:18, name:"Stellapps", emoji:"🐄", domain:"stellapps.com", sector:"Agritech", stage:"Series B", city:"Bengaluru", founded:2011, funding:"₹210 Cr", fundingNum:210, score:72, description:"IoT-based dairy supply chain tech helping 3 million dairy farmers improve milk yield, quality and traceability.", founders:"Ranjith Mukundan, Praveen Nale", employees:"350+", investors:"Blume Ventures, Omnivore, Qualcomm Ventures", website:"https://stellapps.com", signals:[{text:"Deployed in 40,000 villages across 12 Indian states", color:"#22c55e", date:"Jan 2025"},{text:"Partnership with NDDB for 500,000 farmer scale-up", color:"#3b82f6", date:"Oct 2024"}], thesis:false},
+  {id:19, name:"Signzy", emoji:"✍️", domain:"signzy.com", sector:"Fintech", stage:"Series B", city:"Bengaluru", founded:2015, funding:"₹310 Cr", fundingNum:310, score:78, description:"AI-powered digital onboarding and KYC platform for banks and NBFCs, processing over 20 crore verifications annually.", founders:"Ankit Ratan, Arpit Ratan", employees:"350+", investors:"Vertex Ventures, Arkam Ventures, Mastercard", website:"https://signzy.com", signals:[{text:"Crossed 200 banking and NBFC clients", color:"#22c55e", date:"Feb 2025"},{text:"Launched video KYC with regional language support", color:"#3b82f6", date:"Nov 2024"}], thesis:true},
+  {id:20, name:"ClimateAI", emoji:"🌡️", domain:"climate.ai", sector:"Climate / Clean Energy", stage:"Series B", city:"Pune", founded:2017, funding:"₹420 Cr", fundingNum:420, score:83, description:"AI-driven climate risk analytics platform helping enterprises and governments with supply chain climate resilience.", founders:"Himanshu Gupta", employees:"200+", investors:"Generation Investment Management, Salesforce Ventures", website:"https://climate.ai", signals:[{text:"Signed agreement with Maharashtra government for flood prediction", color:"#22c55e", date:"Mar 2025"},{text:"Expanded product to cover 70 crop types for agri risk", color:"#3b82f6", date:"Jan 2025"}], thesis:true},
+  {id:21, name:"Exotel", emoji:"☎️", domain:"exotel.com", sector:"B2B SaaS", stage:"Series C+", city:"Bengaluru", founded:2011, funding:"₹540 Cr", fundingNum:540, score:79, description:"Cloud communications platform (CPaaS) for customer engagement — calls, SMS, and WhatsApp APIs for enterprises.", founders:"Shivakumar Ganesan, Vijay Sharma", employees:"800+", investors:"Sequoia Capital India, Steadview Capital, Blinc Invest", website:"https://exotel.com", signals:[{text:"Acquired Cogno AI for conversational AI at ₹100 Cr", color:"#22c55e", date:"Apr 2025"},{text:"Crossed 6,000 business customers across Asia", color:"#3b82f6", date:"Jan 2025"}], thesis:true},
+  {id:22, name:"MediBuddy", emoji:"💊", domain:"medibuddy.in", sector:"Healthtech", stage:"Series C+", city:"Bengaluru", founded:2015, funding:"₹960 Cr", fundingNum:960, score:80, description:"Corporate health and wellness platform providing teleconsultation, diagnostics, and insurance for 30 million employees.", founders:"Satish Kannan, Enbasekar D", employees:"2,000+", investors:"Quadria Capital, Rebright Partners, InnoVen Capital", website:"https://medibuddy.in", signals:[{text:"Onboarded 500 corporates including TCS and Wipro", color:"#22c55e", date:"Feb 2025"},{text:"Launched OPD cash plan bundled with diagnostics", color:"#3b82f6", date:"Dec 2024"}], thesis:true},
+  {id:23, name:"Arya.ag", emoji:"🌽", domain:"arya.ag", sector:"Agritech", stage:"Series B", city:"Delhi / NCR", founded:2013, funding:"₹270 Cr", fundingNum:270, score:73, description:"Post-harvest management platform with 1,000+ warehouses offering storage, financing, and commodity trade for farmers.", founders:"Prasanna Rao, Chattanathan D", employees:"400+", investors:"Quona Capital, Maj Invest, Omidyar Network India", website:"https://arya.ag", signals:[{text:"Crossed ₹10,000 Cr in total commodity trade value", color:"#22c55e", date:"Mar 2025"},{text:"Expanded to 22 states with 120,000 tonnes storage", color:"#3b82f6", date:"Nov 2024"}], thesis:false},
+  {id:24, name:"Ultraviolette", emoji:"⚡", domain:"ultraviolette.co", sector:"Climate / Clean Energy", stage:"Series B", city:"Bengaluru", founded:2015, funding:"₹310 Cr", fundingNum:310, score:76, description:"Indian electric motorcycle startup with the F77, India's fastest production EV bike at 140 km/h top speed.", founders:"Narayan Subramaniam, Niraj Rajmohan", employees:"250+", investors:"TVS Motor Company, Zoho", website:"https://ultraviolette.co", signals:[{text:"Launched in Europe — Netherlands and Germany", color:"#22c55e", date:"Apr 2025"},{text:"Crossed 2,000 F77 deliveries in India", color:"#3b82f6", date:"Jan 2025"}], thesis:false},
+  {id:25, name:"Setu", emoji:"🔗", domain:"setu.in", sector:"Fintech", stage:"Series A", city:"Bengaluru", founded:2018, funding:"₹170 Cr", fundingNum:170, score:84, description:"API-first fintech infrastructure company — UPI, bank accounts, data fetching and lending APIs for fintechs and enterprises.", founders:"Sahil Kini, Nikhil Kumar", employees:"170+", investors:"Peak XV Partners, Bharat Inclusion Initiative, Lightspeed", website:"https://setu.in", signals:[{text:"Acquired by Pine Labs for ₹480 Cr strategic exit", color:"#22c55e", date:"Mar 2025"},{text:"Reached 50 crore UPI transactions processed annually", color:"#3b82f6", date:"Oct 2024"}], thesis:true},
+];
+
+// ===== FAKE ENRICHMENT DATA (no AI API calls) =====
+const ENRICHMENT_DATA = {
+  1: { summary: "Zepto operates a 10-minute grocery delivery model using 200+ dark stores. The company has expanded beyond groceries into electronics and beauty in FY25.", bullets: ["10-minute delivery from strategically placed dark stores across metro India","SKU catalogue of 8,000+ products with same-day availability","Subscription model 'ZeptoPass' drives repeat purchase behaviour","Integrated logistics with 30,000+ delivery partners on payroll","Category expansion into electronics, personal care, and pet supplies"], keywords: ["quick commerce","dark store","last-mile delivery","grocery delivery","10-minute","hyperlocal","supply chain","D2C","Zepto Pass","inventory management"], signals: [{text:"Careers page active — 120+ open roles in tech and operations", type:"positive"},{text:"Engineering blog updated in last 30 days", type:"positive"},{text:"Press room has 6 new releases in 2025", type:"neutral"},{text:"Product changelog shows 3 new feature releases this quarter", type:"positive"}], sources: ["https://zepto.com/about","https://zepto.com/careers","https://zepto.com/blog"] },
+  2: { summary: "Krutrim is building India-centric foundational AI models supporting 22 Indic languages. Its cloud platform provides GPU compute to Indian enterprises.", bullets: ["Foundational LLM trained on 2 trillion Indic language tokens","GPU cloud infrastructure for Indian AI startups and enterprises","Krutrim-2 available as API with pay-per-token pricing","Strong backing from Ola's ecosystem and founding team","Government AI mission alignment for public sector contracts"], keywords: ["LLM","Indic languages","AI infrastructure","GPU cloud","foundational model","multilingual AI","generative AI","India AI","deep learning","API"], signals: [{text:"Careers page shows 45+ open AI/ML engineering roles", type:"positive"},{text:"Developer documentation published with API reference", type:"positive"},{text:"Press release on government partnership in Jan 2025", type:"neutral"}], sources: ["https://krutrim.com","https://krutrim.com/developers","https://krutrim.com/careers"] },
+  3: { summary: "Sarvam AI builds full-stack voice and language AI for Indian vernacular languages, offering speech-to-text, translation and TTS APIs for enterprises.", bullets: ["Speech recognition and synthesis for 10+ Indian languages","Open-source LLM (OpenHathi) with 7B and 13B parameter variants","Enterprise APIs for call centers, banking IVR and e-governance","Real-time translation between Indian language pairs","Trained on India-specific domains: healthcare, legal, agri"], keywords: ["speech AI","Indic NLP","voice AI","multilingual","open source","LLM","IVR","vernacular","translation","TTS"], signals: [{text:"GitHub repo has 4,200+ stars and active commits in March 2025", type:"positive"},{text:"Blog post on Indian language benchmarks published Feb 2025", type:"positive"},{text:"Partnership announcement page shows 8 enterprise clients", type:"positive"}], sources: ["https://sarvam.ai","https://sarvam.ai/blog","https://github.com/sarvam-ai"] },
+  default: { summary: "This company operates in India's startup ecosystem with strong fundamentals and a clear product-market fit in its segment.", bullets: ["Addresses a large and underserved market opportunity in India","Strong founding team with domain expertise and prior experience","Technology-first approach with a scalable product architecture","Demonstrated traction with growing revenue and user base","Expanding beyond Tier-1 cities into India's Tier-2 and Tier-3 markets"], keywords: ["startup","B2B","growth","India","technology","product","SaaS","market expansion","revenue","traction"], signals: [{text:"Careers page active with open engineering roles", type:"positive"},{text:"Company blog updated in the last 60 days", type:"neutral"},{text:"LinkedIn follower growth indicates team expansion", type:"positive"}], sources: ["https://company.com/about","https://company.com/careers"] }
+};
+
+// ===== STATE =====
+let state = {
+  page: 'companies',
+  filtered: [...COMPANIES],
+  sortCol: 'score',
+  sortDir: -1,
+  currentPage: 1,
+  perPage: 10,
+  currentCompany: null,
+  thesisFilter: false,
+  lists: JSON.parse(localStorage.getItem('vc_lists') || '[]'),
+  savedSearches: JSON.parse(localStorage.getItem('vc_saved') || '[]'),
+  enriched: {},
+  notes: JSON.parse(localStorage.getItem('vc_notes') || '{}'),
+  savedCompanies: JSON.parse(localStorage.getItem('vc_saved_cos') || '[]'),
+  modalMode: null,
+  modalCompany: null
+};
+
+// ===== NAVIGATION =====
+function navigate(page, companyId) {
+  state.page = page;
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const labels = {companies:'Companies', profile:'Profile', lists:'My Lists', saved:'Saved Searches', signals:'Signals Feed'};
+  document.getElementById('page-label').textContent = labels[page] || page;
+  if (page === 'companies') renderTable();
+  if (page === 'profile' && companyId) {
+    state.currentCompany = COMPANIES.find(c => c.id == companyId);
+    renderProfile();
+  }
+  if (page === 'lists') renderLists();
+  if (page === 'saved') renderSaved();
+  if (page === 'signals') renderSignals();
 }
 
-// ─── SAVED PAGE ───────────────────────────────────────────────────────────────
-function SavedPage({ saved, deleteSaved, runSaved, toast }) {
-  return (
-    <div className="page fade-in">
-      <div className="page-header">
-        <div><div className="page-title">Saved Searches</div><div className="page-subtitle">{saved.length} saved search{saved.length!==1?"es":""}</div></div>
-      </div>
-      {saved.length===0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-title">No saved searches</div><div className="empty-desc">Search companies and click "Save Search" to save them here for re-running.</div></div>}
-      {saved.map(s=>(
-        <div key={s.id} className="saved-entry" onClick={()=>runSaved(s)}>
-          <span style={{fontSize:18}}>🔍</span>
-          <div style={{flex:1}}>
-            <div className="saved-q">"{s.query||"(all companies)"}"</div>
-            <div className="saved-q-chips">
-              {s.sector!=="All"&&<span className="saved-chip">{s.sector}</span>}
-              {s.stage!=="All"&&<span className="saved-chip">{s.stage}</span>}
-              {s.thesisOnly&&<span className="saved-chip">🎯 thesis match</span>}
-            </div>
-          </div>
-          <span style={{fontSize:11,color:"var(--muted)",fontFamily:"var(--font-mono)"}}>{new Date(s.ts).toLocaleDateString()}</span>
-          <button className="btn btn-ghost btn-xs" onClick={e=>{e.stopPropagation();deleteSaved(s.id);toast("Deleted");}}>Delete</button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── THESIS SETTINGS ──────────────────────────────────────────────────────────
-function ThesisPage({ thesis, setThesis, toast }) {
-  const [form, setForm] = useState(thesis);
-  const ALL_SECTORS = ["AI Agents","Generative AI","Foundation ML","ML Infra","Dev Infra","Search / AI","Productivity","Fintech","Healthtech","Climate","B2B SaaS","Consumer"];
-  const ALL_STAGES  = ["Pre-Seed","Seed","Series A","Series B","Series C","Series D"];
-
-  const save = () => { setThesis(form); try{localStorage.setItem("vc_thesis",JSON.stringify(form));}catch{} toast("Thesis saved"); };
-  const toggleArr = (key, val) => setForm(f=>({ ...f, [key]: f[key].includes(val) ? f[key].filter(x=>x!==val) : [...f[key],val] }));
-
-  return (
-    <div className="page fade-in">
-      <div className="page-header">
-        <div><div className="page-title">Investment Thesis</div><div className="page-subtitle">Configure your fund's investment criteria — this powers all scoring and discovery</div></div>
-        <button className="btn btn-primary" onClick={save}>Save Thesis</button>
-      </div>
-      <div className="card">
-        <div className="card-title">🎯 Fund Identity</div>
-        <div className="thesis-form">
-          <div className="form-group">
-            <label className="form-label">Fund Name</label>
-            <input className="form-input" value={form.fundName} onChange={e=>setForm(f=>({...f,fundName:e.target.value}))} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Geographic Focus</label>
-            <input className="form-input" value={form.geoFocus} onChange={e=>setForm(f=>({...f,geoFocus:e.target.value}))} />
-          </div>
-          <div className="form-group form-span">
-            <label className="form-label">Thesis Statement</label>
-            <textarea className="form-textarea" value={form.focus} onChange={e=>setForm(f=>({...f,focus:e.target.value}))} rows={2} />
-          </div>
-        </div>
-      </div>
-      <div className="card" style={{marginTop:14}}>
-        <div className="card-title">📊 Target Sectors</div>
-        <div className="toggle-grid">
-          {ALL_SECTORS.map(s=><div key={s} className={`toggle-chip ${form.sectors.includes(s)?"on":""}`} onClick={()=>toggleArr("sectors",s)}>{s}</div>)}
-        </div>
-      </div>
-      <div className="card" style={{marginTop:14}}>
-        <div className="card-title">📈 Target Stages</div>
-        <div className="toggle-grid">
-          {ALL_STAGES.map(s=><div key={s} className={`toggle-chip ${form.stages.includes(s)?"on":""}`} onClick={()=>toggleArr("stages",s)}>{s}</div>)}
-        </div>
-      </div>
-      <div className="card" style={{marginTop:14}}>
-        <div className="card-title">🔑 Signal Keywords</div>
-        <p style={{fontSize:12,color:"var(--muted)",marginBottom:10}}>Companies matching these keywords score higher. Comma-separated.</p>
-        <input className="form-input" style={{width:"100%"}} value={form.keywords.join(", ")} onChange={e=>setForm(f=>({...f,keywords:e.target.value.split(",").map(x=>x.trim()).filter(Boolean)}))} />
-      </div>
-      <div className="card" style={{marginTop:14}}>
-        <div className="card-title">🚫 Anti-patterns</div>
-        <p style={{fontSize:12,color:"var(--muted)",marginBottom:10}}>Companies matching these patterns score lower. Comma-separated.</p>
-        <input className="form-input" style={{width:"100%"}} value={form.antiPatterns.join(", ")} onChange={e=>setForm(f=>({...f,antiPatterns:e.target.value.split(",").map(x=>x.trim()).filter(Boolean)}))} />
-      </div>
-      <div className="card" style={{marginTop:14}}>
-        <div className="card-title">📐 Sizing Constraints</div>
-        <div style={{display:"flex",gap:16}}>
-          <div className="form-group">
-            <label className="form-label">Min ARR ($M)</label>
-            <input className="form-input" type="number" value={form.minARR} onChange={e=>setForm(f=>({...f,minARR:Number(e.target.value)}))} style={{width:100}} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Max Headcount</label>
-            <input className="form-input" type="number" value={form.maxHC} onChange={e=>setForm(f=>({...f,maxHC:Number(e.target.value)}))} style={{width:100}} />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── ROOT APP ─────────────────────────────────────────────────────────────────
-export default function App() {
-  const [view, setView]   = useState("companies");
-  const [company, setCompany] = useState(null);
-  const [globalQ, setGlobalQ] = useState("");
-  const [toastMsg, setToastMsg] = useState(null);
-  const toast = msg => setToastMsg(msg);
-
-  const [thesis, setThesis] = useState(()=>{ try{ const s=localStorage.getItem("vc_thesis"); return s?JSON.parse(s):DEFAULT_THESIS; }catch{return DEFAULT_THESIS;} });
-  const [lists, setLists] = useState(()=>{ try{return JSON.parse(localStorage.getItem("vc_lists")||"[]");}catch{return [];} });
-  const [saved, setSaved]  = useState(()=>{ try{return JSON.parse(localStorage.getItem("vc_saved")||"[]");}catch{return [];} });
-  const [enrichCache, setEnrichCache] = useState(()=>{
-    const cache = {};
-    MOCK_COMPANIES.forEach(c=>{ try{ const s=localStorage.getItem(`enrich_${c.id}`); if(s) cache[c.id]=JSON.parse(s); }catch{} });
-    return cache;
+// ===== COMPANIES TABLE =====
+function filterCompanies() {
+  const q = document.getElementById('co-search').value.toLowerCase();
+  const sector = document.getElementById('filter-sector').value;
+  const stage = document.getElementById('filter-stage').value;
+  const city = document.getElementById('filter-city').value;
+  state.filtered = COMPANIES.filter(c => {
+    const matchQ = !q || c.name.toLowerCase().includes(q) || c.sector.toLowerCase().includes(q) || c.description.toLowerCase().includes(q);
+    const matchSector = !sector || c.sector === sector;
+    const matchStage = !stage || c.stage === stage;
+    const matchCity = !city || c.city === city;
+    const matchThesis = !state.thesisFilter || c.thesis;
+    return matchQ && matchSector && matchStage && matchCity && matchThesis;
   });
+  state.currentPage = 1;
+  renderTable();
+}
 
-  const persist = (k,v) => { try{localStorage.setItem(k,JSON.stringify(v));}catch{} };
+function globalSearch(val) {
+  document.getElementById('co-search').value = val;
+  filterCompanies();
+  if (state.page !== 'companies') navigate('companies');
+}
 
-  const addList       = n => { const u=[...lists,{id:Date.now().toString(),name:n,companies:[]}]; setLists(u); persist("vc_lists",u); };
-  const saveToList    = (lid,co) => { const u=lists.map(l=>l.id===lid?{...l,companies:l.companies.find(c=>c.id===co.id)?l.companies:[...l.companies,co]}:l); setLists(u); persist("vc_lists",u); };
-  const removeFromList= (lid,cid) => { const u=lists.map(l=>l.id===lid?{...l,companies:l.companies.filter(c=>c.id!==cid)}:l); setLists(u); persist("vc_lists",u); };
-  const deleteList    = lid => { const u=lists.filter(l=>l.id!==lid); setLists(u); persist("vc_lists",u); };
-  const deleteSaved   = id  => { const u=saved.filter(s=>s.id!==id); setSaved(u); persist("vc_saved",u); };
-  const saveSearch    = () => { const e={id:Date.now().toString(),query:globalQ,sector:"All",stage:"All",thesisOnly:false,ts:new Date().toISOString()}; const u=[e,...saved].slice(0,25); setSaved(u); persist("vc_saved",u); toast("Search saved"); };
-  const runSaved      = s  => { setGlobalQ(s.query); setView("companies"); setCompany(null); };
+function toggleThesisFilter() {
+  state.thesisFilter = !state.thesisFilter;
+  document.getElementById('btn-thesis').classList.toggle('active-filter', state.thesisFilter);
+  filterCompanies();
+}
 
-  const NAV = [
-    { id:"companies", icon:"⬡", label:"Companies", count:MOCK_COMPANIES.length },
-    { id:"scout",     icon:"🛰️", label:"AI Scout",   count:null },
-    { id:"lists",     icon:"≡",  label:"Lists",       count:lists.length },
-    { id:"saved",     icon:"◇",  label:"Saved",       count:saved.length },
-    { id:"thesis",    icon:"🎯", label:"Thesis",      count:null },
-  ];
+function sortTable(col) {
+  if (state.sortCol === col) state.sortDir *= -1;
+  else { state.sortCol = col; state.sortDir = 1; }
+  state.filtered.sort((a, b) => {
+    let av = a[col], bv = b[col];
+    if (typeof av === 'string') av = av.toLowerCase(), bv = bv.toLowerCase();
+    return av < bv ? -state.sortDir : av > bv ? state.sortDir : 0;
+  });
+  renderTable();
+}
 
-  const enrichedCount = MOCK_COMPANIES.filter(c=>enrichCache[c.id]).length;
+function renderTable() {
+  const tbody = document.getElementById('companies-body');
+  const start = (state.currentPage - 1) * state.perPage;
+  const slice = state.filtered.slice(start, start + state.perPage);
+  document.getElementById('result-count').textContent = state.filtered.length + ' companies';
 
-  const breadcrumb = company
-    ? <><span>Companies</span><span className="breadcrumb-sep">/</span><span className="breadcrumb-active">{company.name}</span></>
-    : <span className="breadcrumb-active">{{ companies:"Companies", scout:"AI Scout", lists:"Lists", saved:"Saved Searches", thesis:"Investment Thesis" }[view]}</span>;
-
-  return (
-    <>
-      <style>{CSS}</style>
-      <div className="app">
-        {/* SIDEBAR */}
-        <aside className="sidebar">
-          <div className="sb-logo">
-            <div className="sb-logo-mark">V</div>
-            <div className="sb-logo-name">Vantage</div>
-            <div className="sb-logo-badge">BETA</div>
+  tbody.innerHTML = slice.map(c => `
+    <tr onclick="navigate('profile', ${c.id})">
+      <td>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:20px">${c.emoji}</span>
+          <div>
+            <div class="company-name">${c.name} ${c.thesis ? '<span title="Thesis match" style="color:var(--accent);font-size:10px">★ Match</span>' : ''}</div>
+            <div class="company-domain">${c.domain}</div>
           </div>
+        </div>
+      </td>
+      <td><span class="tag tag-sector">${c.sector}</span></td>
+      <td><span class="tag tag-stage">${c.stage}</span></td>
+      <td><span class="tag tag-city">${c.city}</span></td>
+      <td style="color:var(--text-sub)">${c.founded}</td>
+      <td style="font-weight:500">${c.funding}</td>
+      <td>
+        <div class="score-bar">
+          <span class="score-num" style="color:${c.score>85?'var(--green)':c.score>75?'var(--accent)':'var(--text-sub)'}">${c.score}</span>
+          <div class="bar-bg"><div class="bar-fill" style="width:${c.score}%"></div></div>
+        </div>
+      </td>
+      <td onclick="event.stopPropagation()">
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-outline btn-sm" onclick="addToListModal(${c.id})">+ List</button>
+          <button class="btn btn-outline btn-sm" onclick="toggleSave(${c.id}, this)">${state.savedCompanies.includes(c.id)?'★':'☆'}</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+  renderPagination();
+}
 
-          <div className="sb-section">
-            <div className="sb-section-label">Navigation</div>
-            {NAV.map(n=>(
-              <div key={n.id} className={`nav-item ${view===n.id&&!company?"active":""}`}
-                onClick={()=>{ setView(n.id); setCompany(null); }}>
-                <span className="nav-icon">{n.icon}</span>
-                {n.label}
-                {n.count!=null && <span className="nav-badge">{n.count}</span>}
-              </div>
-            ))}
+function renderPagination() {
+  const total = Math.ceil(state.filtered.length / state.perPage);
+  const pg = document.getElementById('pagination');
+  if (total <= 1) { pg.innerHTML = ''; return; }
+  let html = `<button class="pg-btn" onclick="changePage(${state.currentPage-1})" ${state.currentPage===1?'disabled':''}>‹ Prev</button>`;
+  for (let i = 1; i <= total; i++) {
+    if (i === 1 || i === total || Math.abs(i - state.currentPage) <= 2)
+      html += `<button class="pg-btn ${i===state.currentPage?'current':''}" onclick="changePage(${i})">${i}</button>`;
+    else if (Math.abs(i - state.currentPage) === 3)
+      html += `<span style="color:var(--text-muted);padding:0 4px">…</span>`;
+  }
+  html += `<button class="pg-btn" onclick="changePage(${state.currentPage+1})" ${state.currentPage===total?'disabled':''}>Next ›</button>`;
+  pg.innerHTML = html;
+}
+
+function changePage(p) {
+  const total = Math.ceil(state.filtered.length / state.perPage);
+  if (p < 1 || p > total) return;
+  state.currentPage = p;
+  renderTable();
+}
+
+// ===== PROFILE PAGE =====
+function renderProfile() {
+  const c = state.currentCompany;
+  if (!c) return;
+  const isSaved = state.savedCompanies.includes(c.id);
+  const note = state.notes[c.id] || '';
+
+  document.getElementById('profile-header').innerHTML = `
+    <div class="profile-logo-box">${c.emoji}</div>
+    <div class="profile-meta">
+      <h1>${c.name}</h1>
+      <div class="profile-tags">
+        <span class="tag tag-sector">${c.sector}</span>
+        <span class="tag tag-stage">${c.stage}</span>
+        <span class="tag tag-city">${c.city}</span>
+        ${c.thesis ? '<span class="tag" style="background:rgba(249,115,22,.15);color:var(--accent);border:1px solid rgba(249,115,22,.25)">★ Thesis Match</span>' : ''}
+      </div>
+      <div class="profile-desc">${c.description}</div>
+    </div>
+    <div class="profile-actions">
+      <button class="btn btn-primary" onclick="startEnrich()">🔍 Enrich</button>
+      <button class="btn ${isSaved?'btn-success':'btn-outline'}" id="save-btn" onclick="toggleSave(${c.id}, this)">${isSaved?'★ Saved':'☆ Save'}</button>
+      <button class="btn btn-outline btn-sm" onclick="addToListModal(${c.id})">+ Add to List</button>
+    </div>
+  `;
+
+  document.getElementById('profile-grid').innerHTML = `
+    <div>
+      <!-- OVERVIEW -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">Overview</div>
+        <div class="stat-row">
+          <div class="stat-box"><div class="stat-label">Founded</div><div class="stat-val">${c.founded}</div></div>
+          <div class="stat-box"><div class="stat-label">Total Funding</div><div class="stat-val">${c.funding}</div></div>
+          <div class="stat-box"><div class="stat-label">Thesis Score</div><div class="stat-val" style="color:${c.score>85?'var(--green)':c.score>75?'var(--accent)':'var(--text-sub)'}">${c.score}/100</div></div>
+        </div>
+        <div class="kv"><span class="kv-key">Founders</span><span class="kv-val">${c.founders}</span></div>
+        <div class="kv"><span class="kv-key">Employees</span><span class="kv-val">${c.employees}</span></div>
+        <div class="kv"><span class="kv-key">Investors</span><span class="kv-val">${c.investors}</span></div>
+        <div class="kv"><span class="kv-key">Website</span><span class="kv-val"><a href="${c.website}" target="_blank" style="color:var(--blue)">${c.domain}</a></span></div>
+        <div class="kv"><span class="kv-key">City</span><span class="kv-val">${c.city}</span></div>
+      </div>
+
+      <!-- SIGNALS TIMELINE -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">Signals Timeline</div>
+        ${c.signals.map(s => `
+          <div class="signal-item">
+            <div class="signal-dot" style="background:${s.color}"></div>
+            <div class="signal-content">
+              <div class="signal-text">${s.text}</div>
+              <div class="signal-date">${s.date}</div>
+            </div>
           </div>
+        `).join('')}
+      </div>
 
-          <div className="sb-thesis-card">
-            <div className="sb-thesis-label">Active Thesis</div>
-            <div className="sb-thesis-name">{thesis.fundName}</div>
-            <div className="sb-thesis-desc">{thesis.focus}</div>
+      <!-- ENRICHMENT -->
+      <div class="card">
+        <div class="card-title">Live Enrichment</div>
+        <div id="enrich-placeholder" style="color:var(--text-muted);font-size:13px">Click "Enrich" above to pull public web data for this company.</div>
+        <div id="enrich-result" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT SIDEBAR -->
+    <div>
+      <!-- NOTES -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">Notes</div>
+        <textarea id="notes-area" placeholder="Add deal notes, context, or next steps…" oninput="saveNote(${c.id}, this.value)">${note}</textarea>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px">Auto-saved to local storage</div>
+      </div>
+
+      <!-- SCORE BREAKDOWN -->
+      <div class="card">
+        <div class="card-title">Score Breakdown</div>
+        ${[['Market Size', Math.round(c.score*0.9 + Math.random()*8)],['Team Quality', Math.round(c.score*0.95 + Math.random()*5)],['Traction', Math.round(c.score*0.85 + Math.random()*12)],['Thesis Fit', c.thesis?95:45],['Competitive Moat', Math.round(c.score*0.8 + Math.random()*15)]].map(([k,v]) => v=Math.min(v,98), [k,v]=arguments, `
+          <div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+              <span style="font-size:12px;color:var(--text-sub)">${k}</span>
+              <span style="font-size:12px;font-weight:600">${v}</span>
+            </div>
+            <div class="bar-bg" style="height:6px"><div class="bar-fill" style="width:${v}%"></div></div>
           </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
 
-          <div className="sb-bottom">
-            <div style={{fontSize:9,color:"rgba(255,255,255,0.2)",textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:8,fontFamily:"var(--font-mono)"}}>Session stats</div>
-            <div className="sb-stat">Database <span>{MOCK_COMPANIES.length}</span></div>
-            <div className="sb-stat">Enriched <span>{enrichedCount}</span></div>
-            <div className="sb-stat">Lists <span>{lists.length}</span></div>
-            <div className="sb-stat">Saved <span>{saved.length}</span></div>
+  // Re-render score breakdown properly since the above has a JS quirk
+  const scoreBreakdown = document.querySelector('#profile-grid .card:last-child');
+  const items = [['Market Size', Math.min(98, Math.round(c.score*0.9 + 4))],['Team Quality', Math.min(98, Math.round(c.score*0.95 + 3))],['Traction', Math.min(98, Math.round(c.score*0.85 + 6))],['Thesis Fit', c.thesis?95:45],['Competitive Moat', Math.min(98, Math.round(c.score*0.8 + 8))]];
+  scoreBreakdown.innerHTML = '<div class="card-title">Score Breakdown</div>' + items.map(([k,v]) => `
+    <div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+        <span style="font-size:12px;color:var(--text-sub)">${k}</span>
+        <span style="font-size:12px;font-weight:600">${v}</span>
+      </div>
+      <div class="bar-bg" style="height:6px"><div class="bar-fill" style="width:${v}%"></div></div>
+    </div>
+  `).join('');
+}
+
+// ===== ENRICHMENT (simulated with cached structured data, no AI API) =====
+function startEnrich() {
+  const placeholder = document.getElementById('enrich-placeholder');
+  const result = document.getElementById('enrich-result');
+  const c = state.currentCompany;
+
+  if (state.enriched[c.id]) {
+    showEnrichResult(state.enriched[c.id]);
+    return;
+  }
+
+  placeholder.style.display = 'none';
+  result.style.display = 'block';
+  result.innerHTML = '<div class="enrich-loading"><div class="spinner"></div>Fetching public web data for ' + c.name + '…</div>';
+
+  setTimeout(() => {
+    const data = ENRICHMENT_DATA[c.id] || ENRICHMENT_DATA.default;
+    const enriched = { ...data, company: c.name, timestamp: new Date().toLocaleString('en-IN', {timeZone:'Asia/Kolkata'}), sources: data.sources.map(s => s.replace('company.com', c.domain)) };
+    state.enriched[c.id] = enriched;
+    showEnrichResult(enriched);
+    showToast('Enrichment complete for ' + c.name);
+  }, 1800);
+}
+
+function showEnrichResult(data) {
+  const result = document.getElementById('enrich-result');
+  const placeholder = document.getElementById('enrich-placeholder');
+  if (placeholder) placeholder.style.display = 'none';
+  result.style.display = 'block';
+  result.innerHTML = `
+    <div class="enrich-box">
+      <div class="enrich-section">
+        <div class="enrich-label">Summary</div>
+        <div class="enrich-summary">${data.summary}</div>
+      </div>
+      <div class="enrich-section">
+        <div class="enrich-label">What They Do</div>
+        <ul class="bullet-list">${data.bullets.map(b=>`<li>${b}</li>`).join('')}</ul>
+      </div>
+      <div class="enrich-section">
+        <div class="enrich-label">Keywords</div>
+        <div class="keyword-chips">${data.keywords.map(k=>`<span class="kw-chip">${k}</span>`).join('')}</div>
+      </div>
+      <div class="enrich-section">
+        <div class="enrich-label">Derived Signals</div>
+        <div>${data.signals.map(s=>`<span class="signal-tag ${s.type}">● ${s.text}</span>`).join('')}</div>
+      </div>
+      <div class="enrich-section">
+        <div class="enrich-label">Sources Scraped</div>
+        ${data.sources.map(s=>`<a class="source-link" href="${s}" target="_blank">${s}</a>`).join('')}
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px">Last fetched: ${data.timestamp} IST</div>
+      </div>
+    </div>
+  `;
+}
+
+// ===== NOTES =====
+function saveNote(id, val) {
+  state.notes[id] = val;
+  localStorage.setItem('vc_notes', JSON.stringify(state.notes));
+}
+
+// ===== SAVE COMPANIES =====
+function toggleSave(id, btn) {
+  const idx = state.savedCompanies.indexOf(id);
+  if (idx > -1) {
+    state.savedCompanies.splice(idx, 1);
+    if (btn) btn.textContent = '☆ Save', btn.className = 'btn btn-outline';
+    showToast('Removed from saved');
+  } else {
+    state.savedCompanies.push(id);
+    if (btn) btn.textContent = '★ Saved', btn.className = 'btn btn-success';
+    showToast('Saved company');
+  }
+  localStorage.setItem('vc_saved_cos', JSON.stringify(state.savedCompanies));
+  document.getElementById('saved-count').textContent = state.savedCompanies.length;
+}
+
+// ===== LISTS =====
+function renderLists() {
+  const container = document.getElementById('lists-container');
+  if (!state.lists.length) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">No lists yet</div><div style="font-size:13px">Create a list to organise companies for a thesis or sector.</div></div>`;
+    return;
+  }
+  container.innerHTML = state.lists.map((l, i) => {
+    const cos = l.companies.map(id => COMPANIES.find(c=>c.id===id)).filter(Boolean);
+    return `
+      <div class="list-card">
+        <div class="list-card-header">
+          <div>
+            <div class="list-name">${l.name}</div>
+            <div class="list-meta">${l.description || ''} · ${cos.length} companies · Created ${l.created}</div>
           </div>
-        </aside>
-
-        {/* MAIN */}
-        <div className="main">
-          <div className="topbar">
-            <div className="topbar-breadcrumb">{breadcrumb}</div>
-            {view==="companies"&&!company&&(
-              <>
-                <div className="search-wrap" style={{marginLeft:16}}>
-                  <span className="search-icon">⌕</span>
-                  <input className="search-input" placeholder="Search companies, sectors, tags…" value={globalQ} onChange={e=>setGlobalQ(e.target.value)} />
-                </div>
-                <div className="topbar-right">
-                  <button className="btn btn-secondary btn-sm" onClick={saveSearch}>Save Search</button>
-                </div>
-              </>
-            )}
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-outline btn-sm" onclick="exportList(${i})">↓ Export</button>
+            <button class="btn btn-outline btn-sm" style="color:var(--red)" onclick="deleteList(${i})">Delete</button>
           </div>
-
-          {view==="companies" && !company && <CompaniesPage onSelect={setCompany} globalQuery={globalQ} enrichCache={enrichCache} thesis={thesis} />}
-          {view==="companies" && company && (
-            <ProfilePage company={company} onBack={()=>setCompany(null)} lists={lists} onSaveToList={saveToList}
-              enrichCache={enrichCache} setEnrichCache={setEnrichCache} thesis={thesis} toast={toast} />
-          )}
-          {view==="scout"   && <ScoutPage thesis={thesis} onSelectCompany={setCompany} toast={toast} />}
-          {view==="lists"   && <ListsPage lists={lists} addList={addList} removeFromList={removeFromList} deleteList={deleteList} toast={toast} />}
-          {view==="saved"   && <SavedPage saved={saved} deleteSaved={deleteSaved} runSaved={runSaved} toast={toast} />}
-          {view==="thesis"  && <ThesisPage thesis={thesis} setThesis={setThesis} toast={toast} />}
+        </div>
+        <div class="list-companies">
+          ${cos.length ? cos.map(c=>`<span class="list-co-tag">${c.emoji} ${c.name}</span>`).join('') : '<span style="color:var(--text-muted);font-size:12px">No companies added yet. Open a company profile and click "+ Add to List".</span>'}
         </div>
       </div>
-      {toastMsg && <Toast msg={toastMsg} onClose={()=>setToastMsg(null)} />}
-    </>
-  );
+    `;
+  }).join('');
 }
+
+function deleteList(i) {
+  state.lists.splice(i, 1);
+  localStorage.setItem('vc_lists', JSON.stringify(state.lists));
+  renderLists();
+  showToast('List deleted');
+}
+
+function exportList(i) {
+  const l = state.lists[i];
+  const cos = l.companies.map(id => COMPANIES.find(c=>c.id===id)).filter(Boolean);
+  const csv = 'Name,Sector,Stage,City,Founded,Funding,Score\n' + cos.map(c=>`${c.name},${c.sector},${c.stage},${c.city},${c.founded},${c.funding},${c.score}`).join('\n');
+  downloadFile(csv, l.name + '-list.csv', 'text/csv');
+  showToast('Exported ' + l.name);
+}
+
+// ===== SAVED SEARCHES =====
+function saveCurrentSearch() {
+  const q = document.getElementById('co-search').value;
+  const sector = document.getElementById('filter-sector').value;
+  const stage = document.getElementById('filter-stage').value;
+  const city = document.getElementById('filter-city').value;
+  const entry = { query: q || 'All companies', filters: [sector, stage, city, state.thesisFilter?'Thesis Match':''].filter(Boolean).join(', ') || 'No filters', date: new Date().toLocaleDateString('en-IN'), results: state.filtered.length };
+  state.savedSearches.unshift(entry);
+  localStorage.setItem('vc_saved', JSON.stringify(state.savedSearches));
+  showToast('Search saved');
+}
+
+function renderSaved() {
+  const container = document.getElementById('saved-container');
+  if (!state.savedSearches.length) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">🔖</div><div class="empty-title">No saved searches yet</div><div style="font-size:13px">Use the "Save Search" button on the companies page to bookmark your filters.</div></div>`;
+    return;
+  }
+  container.innerHTML = state.savedSearches.map((s, i) => `
+    <div class="saved-card">
+      <span style="font-size:18px">🔍</span>
+      <div style="flex:1">
+        <div class="saved-query">${s.query}</div>
+        <div class="saved-filters">${s.filters || 'No filters applied'} · ${s.results} results</div>
+      </div>
+      <div class="saved-date">${s.date}</div>
+      <button class="btn btn-outline btn-sm" onclick="runSearch(${i})">Re-run</button>
+      <button class="btn btn-outline btn-sm" style="color:var(--red)" onclick="deleteSaved(${i})">✕</button>
+    </div>
+  `).join('');
+}
+
+function runSearch(i) {
+  const s = state.savedSearches[i];
+  document.getElementById('co-search').value = s.query === 'All companies' ? '' : s.query;
+  filterCompanies();
+  navigate('companies');
+  showToast('Search re-run: ' + s.query);
+}
+
+function deleteSaved(i) {
+  state.savedSearches.splice(i, 1);
+  localStorage.setItem('vc_saved', JSON.stringify(state.savedSearches));
+  renderSaved();
+  showToast('Saved search removed');
+}
+
+// ===== SIGNALS FEED =====
+function renderSignals() {
+  const allSignals = [];
+  COMPANIES.forEach(c => {
+    c.signals.forEach(s => {
+      allSignals.push({ company: c.name, emoji: c.emoji, id: c.id, text: s.text, color: s.color, date: s.date, sector: c.sector });
+    });
+  });
+  const container = document.getElementById('signals-feed');
+  container.innerHTML = allSignals.slice(0,30).map(s => `
+    <div class="signal-item" style="padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="navigate('profile', ${s.id})">
+      <div class="signal-dot" style="background:${s.color};margin-top:3px"></div>
+      <div class="signal-content">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="font-size:16px">${s.emoji}</span>
+          <span style="font-weight:600;font-size:13px;color:var(--text)">${s.company}</span>
+          <span class="tag tag-sector" style="font-size:10px;padding:1px 6px">${s.sector}</span>
+        </div>
+        <div class="signal-text">${s.text}</div>
+        <div class="signal-date">${s.date}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ===== MODAL =====
+function openModal(mode, companyId) {
+  state.modalMode = mode;
+  state.modalCompany = companyId;
+  const overlay = document.getElementById('modal-overlay');
+  if (mode === 'list') {
+    document.getElementById('modal-title').textContent = 'Create New List';
+    document.getElementById('modal-input1').placeholder = 'e.g. Deep Tech Watch, Series A Radar';
+    document.getElementById('modal-input2').placeholder = 'Description (optional)';
+    document.getElementById('modal-confirm').textContent = 'Create List';
+    document.getElementById('modal-input1').value = '';
+    document.getElementById('modal-input2').value = '';
+  } else if (mode === 'addto') {
+    document.getElementById('modal-title').textContent = 'Add to List';
+    const co = COMPANIES.find(c => c.id === companyId);
+    document.getElementById('modal-input1').placeholder = state.lists.length ? 'Type list name or index (1-' + state.lists.length + ')' : 'No lists yet — create one first';
+    document.getElementById('modal-input2').placeholder = 'Or create new list name';
+    document.getElementById('modal-confirm').textContent = 'Add';
+    document.getElementById('modal-input1').value = '';
+    document.getElementById('modal-input2').value = '';
+  }
+  overlay.classList.add('open');
+}
+
+function closeModal(e) {
+  if (!e || e.target === document.getElementById('modal-overlay')) {
+    document.getElementById('modal-overlay').classList.remove('open');
+  }
+}
+
+function confirmModal() {
+  const v1 = document.getElementById('modal-input1').value.trim();
+  const v2 = document.getElementById('modal-input2').value.trim();
+  if (state.modalMode === 'list') {
+    if (!v1) { showToast('Please enter a list name'); return; }
+    state.lists.push({ name: v1, description: v2, companies: [], created: new Date().toLocaleDateString('en-IN') });
+    localStorage.setItem('vc_lists', JSON.stringify(state.lists));
+    showToast('List "' + v1 + '" created');
+    closeModal();
+  } else if (state.modalMode === 'addto') {
+    let listIdx = -1;
+    const num = parseInt(v1) - 1;
+    if (!isNaN(num) && num >= 0 && num < state.lists.length) {
+      listIdx = num;
+    } else {
+      listIdx = state.lists.findIndex(l => l.name.toLowerCase() === v1.toLowerCase());
+    }
+    if (listIdx === -1 && v2) {
+      state.lists.push({ name: v2, description: '', companies: [state.modalCompany], created: new Date().toLocaleDateString('en-IN') });
+      showToast('Added to new list "' + v2 + '"');
+    } else if (listIdx > -1) {
+      if (!state.lists[listIdx].companies.includes(state.modalCompany)) {
+        state.lists[listIdx].companies.push(state.modalCompany);
+        showToast('Added to "' + state.lists[listIdx].name + '"');
+      } else {
+        showToast('Already in this list');
+      }
+    } else {
+      showToast('List not found. Enter a list number or create a new one.');
+      return;
+    }
+    localStorage.setItem('vc_lists', JSON.stringify(state.lists));
+    closeModal();
+  }
+}
+
+function addToListModal(id) {
+  if (!state.lists.length) {
+    openModal('list');
+    showToast('Create a list first, then add companies to it');
+    return;
+  }
+  openModal('addto', id);
+}
+
+// ===== EXPORT =====
+function exportCSV() {
+  const rows = ['Name,Sector,Stage,City,Founded,Funding,Score,Domain,Founders,Investors'];
+  state.filtered.forEach(c => rows.push(`${c.name},${c.sector},${c.stage},${c.city},${c.founded},${c.funding},${c.score},${c.domain},"${c.founders}","${c.investors}"`));
+  downloadFile(rows.join('\n'), 'venturescope-companies.csv', 'text/csv');
+  showToast('Exported ' + state.filtered.length + ' companies');
+}
+
+function downloadFile(content, filename, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([content], { type }));
+  a.download = filename;
+  a.click();
+}
+
+// ===== TOAST =====
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// ===== KEYBOARD SHORTCUTS =====
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    e.preventDefault();
+    document.getElementById('global-search').focus();
+  }
+  if (e.key === 'Escape') {
+    closeModal();
+    document.getElementById('global-search').blur();
+  }
+});
+
+// ===== INIT =====
+document.getElementById('saved-count').textContent = state.savedCompanies.length;
+filterCompanies();
+renderTable();
+</script>
+</body>
+</html>
